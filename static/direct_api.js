@@ -1,0 +1,2495 @@
+/**
+ * Pure-browser client adapter for Alt-History Studio (架空历史图片处理站).
+ * Enables running 100% standalone on static HTTPS hosting (GitHub Pages / Cloudflare Pages / Netlify)
+ * with zero dependency on a local PC server. All API keys and histories stay strictly on-device.
+ */
+(() => {
+  const CLOUD_URL = 'https://hsijocey.github.io/alt-history-studio/';
+  const STORAGE_CFG_KEY = 'alt_history_studio_cfg_v1';
+  const LEGACY_SHARED_CFG_KEY = 'seedream_studio_cfg_v1';
+  const STORAGE_JOBS_KEY = 'alt_history_studio_jobs_v1';
+  const STORAGE_WRITING_KEY = 'alt_history_studio_writing_v1';
+  const IDB_NAME = 'alt_history_studio_blobs_v1';
+  const IDB_STORE = 'blobs';
+
+  const SEEDREAM_MODELS = {
+    'text-to-image': 'bytedance/seedream-5.5/text-to-image',
+    edit: 'bytedance/seedream-5.5/edit',
+    'layer-decomposition': 'bytedance/seedream-5.5/layer-decomposition',
+  };
+  const ASPECT_RATIOS = ['1:1', '4:3', '3:4', '16:9', '9:16', '3:2', '2:3', '21:9'];
+  const IMAGE_RESOLUTIONS = ['1k', '1.5k', '2k'];
+  const LAYER_RESOLUTIONS = ['auto', '1k', '1.5k', '2k'];
+  const OUTPUT_FORMATS = ['png', 'jpeg'];
+  const BACKGROUNDS = ['auto', 'transparent', 'opaque'];
+
+  const VENICE_TEXT_PRESETS = [
+    {
+      id: 'deepseek-v4-1-flash-1017-uncensored',
+      label: 'DeepSeek V4.1 Uncensored（552B · 识图 · 中文最强 · 推荐）',
+      price_hint: '$0.33 / $1.32 每百万 tokens',
+      vision: true,
+      web_search: true,
+      reasoning_effort: 'none',
+    },
+    {
+      id: 'venice-uncensored-1-2',
+      label: 'Venice Uncensored 1.2（24B · 最彻底无审查 · 识图）',
+      price_hint: '$0.20 / $0.90 每百万 tokens',
+      vision: true,
+      web_search: true,
+    },
+    {
+      id: 'venice-uncensored-role-play',
+      label: 'Venice Role Play Uncensored（剧情/角色扮演专精 · 识图）',
+      price_hint: '$0.50 / $2.00 每百万 tokens',
+      vision: true,
+      web_search: true,
+    },
+    {
+      id: 'gemma-4-uncensored',
+      label: 'Gemma 4 Uncensored（26B MoE · 最省快速 · 识图）',
+      price_hint: '$0.1625 / $0.50 每百万 tokens',
+      vision: true,
+      web_search: true,
+    },
+  ];
+
+  const SPICY_TEXT_PRESETS = [
+    {
+      id: 'xiaomi/mimo-v2.6-flash/chat',
+      label: 'MiMo V2.6 Flash（极低价 · 无限制 · 推荐）',
+      price_hint: '$0.14 / $0.28 每百万 tokens',
+      reasoning_effort: 'none',
+    },
+    {
+      id: 'inclusionai/ling-3.1-flash/chat',
+      label: 'Ling 3.1 Flash（最低价 · 无限制）',
+      price_hint: '$0.075 / $0.225 每百万 tokens',
+      reasoning_effort: 'none',
+    },
+    {
+      id: 'zai/glm-5.3-flash/chat',
+      label: 'GLM 5.3 Flash（中文强 · 无限制）',
+      price_hint: '$0.1275 / $0.425 每百万 tokens',
+      reasoning_effort: 'low',
+    },
+    {
+      id: 'deepseek/v4.1-flash/chat',
+      label: 'DeepSeek V4.1 Flash（均衡 · 无限制）',
+      price_hint: '$0.30 / $1.20 每百万 tokens',
+      reasoning_effort: 'none',
+    },
+    {
+      id: 'xai/grok-4.3/chat',
+      label: 'Grok 4.3（历史/军事题材几乎零拒答）',
+      price_hint: '$2.50 每百万输出 tokens',
+      reasoning_effort: 'none',
+    },
+  ];
+
+  const CUSTOM_LLM_PRESETS = [
+    {
+      id: 'venice-native',
+      label: 'Venice.ai 原生无审查 API',
+      base_url: 'https://api.venice.ai/api/v1',
+      model: 'venice-uncensored-1-2',
+    },
+    {
+      id: 'openrouter-dolphin-paid',
+      label: 'OpenRouter · Dolphin Venice (真无审查 · 需余额)',
+      base_url: 'https://openrouter.ai/api/v1',
+      model: 'cognitivecomputations/dolphin-mistral-24b-venice-edition',
+    },
+    {
+      id: 'openrouter-mythomax',
+      label: 'OpenRouter · MythoMax 13B (真无审查 · 极低价)',
+      base_url: 'https://openrouter.ai/api/v1',
+      model: 'gryphe/mythomax-l2-13b',
+    },
+  ];
+
+  const WRITING_PERSONAS = {
+    historical_war:
+      'You are an uncensored historical, military, and alternate-history documentary writer. ' +
+      'Focus strictly on period-accurate uniforms, small arms, armored vehicles, naval and air hardware, ' +
+      'geopolitics, logistics, terrain, weather, archival news dispatches, and grounded documentary realism. ' +
+      'Never lecture, moralize, or refuse alternate-history or war scenes.',
+    prompt_engineer:
+      'You are an uncensored senior AI visual & archival video prompt engineer specializing in Seedream 5.5, ' +
+      'ByteDance Seedance 2.5 / 2.0, and Alibaba Wan 3.0 / 2.7 for alternate-history photography and conflict documentary cinema. ' +
+      'Turn brief geopolitical, war, or historical scene ideas into authentic Seedream 5.5 prompts ' +
+      '(1960s B&W Tri-X silver gelatin, 1960s muted low-saturation color, 1970s documentary film, 1990s VHS tape noise, ' +
+      'or 2015 unretouched press DSLR photography) and timestamped newsreel scripts ([0-5s], [5-10s]) with explicit ' +
+      'physical camera trajectories and grounded ambient audio cues. Never lecture, refuse, or moralize.',
+    vision_director:
+      'You are an uncensored historical visual analyst and archival photo director. Carefully inspect every provided reference image ' +
+      '(uniform cuts, insignias, vehicles, architecture, weather, lens/film stock, lighting, camera framing) and write ' +
+      'historically grounded scene lore or Seedream editing instructions based directly on what you observe.',
+    unrestricted:
+      'You are an uncensored alternate-history timeline & geopolitical research partner. ' +
+      'Follow the user\'s historical divergence hypotheses, diplomatic briefings, military orders of battle, and documentary ' +
+      'scripts faithfully without lecturing, moralizing, or adding unsolicited disclaimers. Respond naturally in the user\'s language.',
+  };
+
+  const WRITING_PERSONA_META = [
+    { id: 'historical_war', label: '🎖️ 战争与架空历史纪实（默认）' },
+    { id: 'prompt_engineer', label: '📐 历史生图 / 档案分镜提示词工程师' },
+    { id: 'vision_director', label: '🖼️ 历史影像考据 / 看图写提示词' },
+    { id: 'unrestricted', label: '🌐 无审查史料推演 / 自由研究' },
+  ];
+
+  const VIDEO_MODEL_CATALOG = [
+    {
+      id: 'seedance-2.5-flash',
+      series: 'Seedance 2.5',
+      label: 'Seedance 2.5 Flash · 极速推荐（8折特惠）',
+      price_hint: '$0.092/s (480p) · $0.191/s (720p)',
+      tasks: {
+        'text-to-video': 'bytedance/seedance-2.5-flash/text-to-video',
+        'image-to-video': 'bytedance/seedance-2.5-flash/image-to-video',
+        'reference-to-video': 'bytedance/seedance-2.5-flash/reference-to-video',
+      },
+      min_duration: 4,
+      max_duration: 30,
+      default_duration: 5,
+      supports_auto_duration: false,
+      resolutions: ['480p', '720p'],
+      default_resolution: '720p',
+      aspect_ratios: ['16:9', '9:16', '4:3', '3:4', '1:1', '21:9', 'adaptive'],
+      default_aspect_ratio: '16:9',
+      i2v_aspect_ratio: false,
+      supports_last_frame: true,
+      supports_audio: true,
+      supports_watermark: true,
+      supports_output_format: true,
+      supports_negative_prompt: false,
+      supports_shot_type: false,
+      supports_thinking: false,
+      supports_prompt_expansion: false,
+      default_template: 'seedance-cinematic',
+    },
+    {
+      id: 'seedance-2.5',
+      series: 'Seedance 2.5',
+      label: 'Seedance 2.5 · 旗舰版（支持 1080p/4K）',
+      price_hint: '$0.123/s (480p) · $0.277/s (720p) · $0.682/s (1080p)',
+      tasks: {
+        'text-to-video': 'bytedance/seedance-2.5/text-to-video',
+        'image-to-video': 'bytedance/seedance-2.5/image-to-video',
+        'reference-to-video': 'bytedance/seedance-2.5/reference-to-video',
+      },
+      min_duration: 4,
+      max_duration: 30,
+      default_duration: 5,
+      supports_auto_duration: false,
+      resolutions: ['480p', '720p', '1080p', '4k'],
+      ref_max_resolution: '1080p',
+      default_resolution: '720p',
+      aspect_ratios: ['adaptive', '16:9', '9:16', '4:3', '3:4', '1:1', '21:9'],
+      default_aspect_ratio: 'adaptive',
+      i2v_aspect_ratio: 'adaptive_only',
+      supports_last_frame: true,
+      supports_audio: true,
+      supports_watermark: true,
+      supports_output_format: true,
+      supports_negative_prompt: false,
+      supports_shot_type: false,
+      supports_thinking: false,
+      supports_prompt_expansion: false,
+      default_template: 'seedance-cinematic',
+    },
+    {
+      id: 'seedance-2.5-spicy',
+      series: 'Seedance 2.5',
+      label: 'Seedance 2.5 Spicy · 图生视频无约束加强版',
+      price_hint: '$0.216/s (480p) · $0.432/s (720p) · $1.08/s (1080p)',
+      tasks: {
+        'image-to-video': 'bytedance/seedance-2.5-spicy/image-to-video',
+      },
+      min_duration: 4,
+      max_duration: 30,
+      default_duration: 5,
+      supports_auto_duration: false,
+      resolutions: ['480p', '720p', '1080p', '4k'],
+      default_resolution: '720p',
+      aspect_ratios: [],
+      default_aspect_ratio: 'adaptive',
+      i2v_aspect_ratio: false,
+      supports_last_frame: true,
+      supports_audio: true,
+      supports_watermark: false,
+      supports_output_format: false,
+      supports_negative_prompt: false,
+      supports_shot_type: false,
+      supports_thinking: false,
+      supports_prompt_expansion: false,
+      default_template: 'seedance-i2v-ref',
+    },
+    {
+      id: 'seedance-2.0',
+      series: 'Seedance 2.0',
+      label: 'Seedance 2.0 · 经典标准版（4–15秒）',
+      price_hint: '$0.07/s (480p) · $0.152/s (720p) · $0.374/s (1080p)',
+      tasks: {
+        'text-to-video': 'bytedance/seedance-2.0/text-to-video',
+        'image-to-video': 'bytedance/seedance-2.0/image-to-video',
+        'reference-to-video': 'bytedance/seedance-2.0/reference-to-video',
+      },
+      min_duration: 4,
+      max_duration: 15,
+      default_duration: 5,
+      supports_auto_duration: true,
+      resolutions: ['480p', '720p', '1080p', '4k'],
+      default_resolution: '720p',
+      aspect_ratios: ['adaptive', '16:9', '9:16', '4:3', '3:4', '1:1', '21:9'],
+      default_aspect_ratio: 'adaptive',
+      i2v_aspect_ratio: true,
+      supports_last_frame: true,
+      supports_audio: true,
+      supports_watermark: true,
+      supports_output_format: false,
+      supports_negative_prompt: false,
+      supports_shot_type: false,
+      supports_thinking: false,
+      supports_prompt_expansion: false,
+      default_template: 'seedance-cinematic',
+    },
+    {
+      id: 'seedance-2.0-fast',
+      series: 'Seedance 2.0',
+      label: 'Seedance 2.0 Fast · 低价极速版（4–15秒）',
+      price_hint: '$0.045/s (480p) · $0.097/s (720p)',
+      tasks: {
+        'text-to-video': 'bytedance/seedance-2.0-fast/text-to-video',
+        'image-to-video': 'bytedance/seedance-2.0-fast/image-to-video',
+        'reference-to-video': 'bytedance/seedance-2.0-fast/reference-to-video',
+      },
+      min_duration: 4,
+      max_duration: 15,
+      default_duration: 5,
+      supports_auto_duration: true,
+      resolutions: ['480p', '720p'],
+      default_resolution: '720p',
+      aspect_ratios: ['adaptive', '16:9', '9:16', '4:3', '3:4', '1:1', '21:9'],
+      default_aspect_ratio: 'adaptive',
+      i2v_aspect_ratio: true,
+      supports_last_frame: true,
+      supports_audio: true,
+      supports_watermark: true,
+      supports_output_format: false,
+      supports_negative_prompt: false,
+      supports_shot_type: false,
+      supports_thinking: false,
+      supports_prompt_expansion: false,
+      default_template: 'seedance-cinematic',
+    },
+    {
+      id: 'seedance-2.0-spicy',
+      series: 'Seedance 2.0',
+      label: 'Seedance 2.0 Spicy · 图生视频加强版（4–15秒）',
+      price_hint: '$0.114/s (480p) · $0.228/s (720p) · $0.57/s (1080p)',
+      tasks: {
+        'image-to-video': 'bytedance/seedance-2.0-spicy/image-to-video',
+      },
+      min_duration: 4,
+      max_duration: 15,
+      default_duration: 5,
+      supports_auto_duration: false,
+      resolutions: ['480p', '720p', '1080p', '4k'],
+      default_resolution: '720p',
+      aspect_ratios: ['adaptive', '16:9', '9:16', '4:3', '3:4', '1:1', '21:9'],
+      default_aspect_ratio: 'adaptive',
+      i2v_aspect_ratio: true,
+      supports_last_frame: true,
+      supports_audio: true,
+      supports_watermark: false,
+      supports_output_format: false,
+      supports_negative_prompt: false,
+      supports_shot_type: false,
+      supports_thinking: false,
+      supports_prompt_expansion: false,
+      default_template: 'seedance-i2v-ref',
+    },
+    {
+      id: 'wan-3.0',
+      series: '万象 Wan 3.0',
+      label: '万象 Wan 3.0 · 全能标准版（2–30秒）',
+      price_hint: '$0.045/s (480p) · $0.09/s (720p) · $0.18/s (1080p)',
+      tasks: {
+        'text-to-video': 'alibaba/wan-3.0/text-to-video',
+        'image-to-video': 'alibaba/wan-3.0/image-to-video',
+        'reference-to-video': 'alibaba/wan-3.0/reference-to-video',
+      },
+      min_duration: 2,
+      max_duration: 30,
+      default_duration: 5,
+      supports_auto_duration: true,
+      resolutions: ['480p', '720p', '1080p'],
+      default_resolution: '720p',
+      aspect_ratios: ['16:9', '9:16', '1:1', '4:3', '3:4', 'adaptive'],
+      default_aspect_ratio: '16:9',
+      i2v_aspect_ratio: true,
+      supports_last_frame: true,
+      supports_audio: true,
+      supports_watermark: false,
+      supports_output_format: false,
+      supports_negative_prompt: false,
+      supports_shot_type: false,
+      supports_thinking: true,
+      supports_prompt_expansion: true,
+      default_template: 'wan-director',
+    },
+    {
+      id: 'wan-3.0-prime',
+      series: '万象 Wan 3.0',
+      label: '万象 Wan 3.0 Prime · 高画质版（2–30秒）',
+      price_hint: '$0.061/s (480p) · $0.126/s (720p) · $0.252/s (1080p)',
+      tasks: {
+        'text-to-video': 'alibaba/wan-3.0-prime/text-to-video',
+        'image-to-video': 'alibaba/wan-3.0-prime/image-to-video',
+        'reference-to-video': 'alibaba/wan-3.0-prime/reference-to-video',
+      },
+      min_duration: 2,
+      max_duration: 30,
+      default_duration: 5,
+      supports_auto_duration: true,
+      resolutions: ['480p', '720p', '1080p'],
+      default_resolution: '720p',
+      aspect_ratios: ['16:9', '9:16', '1:1', '4:3', '3:4', 'adaptive'],
+      default_aspect_ratio: '16:9',
+      i2v_aspect_ratio: true,
+      supports_last_frame: true,
+      supports_audio: true,
+      supports_watermark: false,
+      supports_output_format: false,
+      supports_negative_prompt: false,
+      supports_shot_type: false,
+      supports_thinking: true,
+      supports_prompt_expansion: true,
+      default_template: 'wan-director',
+    },
+    {
+      id: 'wan-3.0-pro',
+      series: '万象 Wan 3.0',
+      label: '万象 Wan 3.0 Pro · 超清版（1080p/2K/4K）',
+      price_hint: '$0.144/s (1080p) · $0.16/s (2K) · $0.184/s (4K)',
+      tasks: {
+        'text-to-video': 'alibaba/wan-3.0-pro/text-to-video',
+        'image-to-video': 'alibaba/wan-3.0-pro/image-to-video',
+        'reference-to-video': 'alibaba/wan-3.0-pro/reference-to-video',
+      },
+      min_duration: 2,
+      max_duration: 30,
+      default_duration: 5,
+      supports_auto_duration: true,
+      resolutions: ['1080p', '2k', '4k'],
+      default_resolution: '1080p',
+      aspect_ratios: ['adaptive', '16:9', '9:16', '4:3', '3:4', '1:1'],
+      default_aspect_ratio: 'adaptive',
+      i2v_aspect_ratio: true,
+      supports_last_frame: true,
+      supports_audio: true,
+      supports_watermark: false,
+      supports_output_format: false,
+      supports_negative_prompt: false,
+      supports_shot_type: false,
+      supports_thinking: false,
+      supports_prompt_expansion: true,
+      default_template: 'wan-director',
+    },
+    {
+      id: 'wan-3.0-spicy',
+      series: '万象 Wan 3.0',
+      label: '万象 Wan 3.0 Spicy · 图生视频无约束版（2–30秒）',
+      price_hint: '$0.057/s (480p) · $0.114/s (720p) · $0.228/s (1080p)',
+      tasks: {
+        'image-to-video': 'alibaba/wan-3.0-spicy/image-to-video',
+      },
+      min_duration: 2,
+      max_duration: 30,
+      default_duration: 5,
+      supports_auto_duration: false,
+      resolutions: ['480p', '720p', '1080p'],
+      default_resolution: '720p',
+      aspect_ratios: ['16:9', '9:16', '1:1', '4:3', '3:4'],
+      default_aspect_ratio: '16:9',
+      i2v_aspect_ratio: true,
+      supports_last_frame: true,
+      supports_audio: true,
+      supports_watermark: false,
+      supports_output_format: false,
+      supports_negative_prompt: false,
+      supports_shot_type: false,
+      supports_thinking: false,
+      supports_prompt_expansion: true,
+      default_template: 'wan-i2v-motion',
+    },
+    {
+      id: 'wan-2.7-spicy',
+      series: '万象 Wan 2.7 / 2.6',
+      label: '万象 Wan 2.7 Spicy · 图生视频版（2–15秒）',
+      price_hint: '$0.1235/s (720p) · $0.19/s (1080p)',
+      tasks: {
+        'image-to-video': 'alibaba/wan-2.7-spicy/image-to-video',
+      },
+      min_duration: 2,
+      max_duration: 15,
+      default_duration: 5,
+      supports_auto_duration: false,
+      resolutions: ['720p', '1080p'],
+      default_resolution: '720p',
+      aspect_ratios: [],
+      default_aspect_ratio: 'adaptive',
+      i2v_aspect_ratio: false,
+      supports_last_frame: false,
+      supports_audio: true,
+      supports_watermark: false,
+      supports_output_format: false,
+      supports_negative_prompt: true,
+      supports_shot_type: false,
+      supports_thinking: false,
+      supports_prompt_expansion: true,
+      default_template: 'wan-i2v-motion',
+    },
+    {
+      id: 'wan-2.6',
+      series: '万象 Wan 2.7 / 2.6',
+      label: '万象 Wan 2.6 · 支持文/图生视频与多镜头（5/10/15秒）',
+      price_hint: '$0.09/s (720p) · $0.135/s (1080p)',
+      tasks: {
+        'text-to-video': 'alibaba/wan-2.6/text-to-video',
+        'image-to-video': 'alibaba/wan-2.6/image-to-video',
+        'reference-to-video': 'alibaba/wan-2.6/reference-to-video',
+      },
+      min_duration: 5,
+      max_duration: 15,
+      duration_choices: [5, 10, 15],
+      ref_min_duration: 2,
+      ref_max_duration: 10,
+      default_duration: 5,
+      supports_auto_duration: false,
+      resolutions: ['720p', '1080p'],
+      default_resolution: '720p',
+      aspect_ratios: ['16:9', '9:16', '1:1', '4:3', '3:4'],
+      default_aspect_ratio: '16:9',
+      i2v_aspect_ratio: false,
+      supports_last_frame: false,
+      supports_audio: false,
+      supports_watermark: false,
+      supports_output_format: false,
+      supports_negative_prompt: true,
+      supports_shot_type: true,
+      supports_thinking: false,
+      supports_prompt_expansion: true,
+      default_template: 'wan-director',
+    },
+  ];
+
+  const VIDEO_MODEL_MAP = Object.fromEntries(VIDEO_MODEL_CATALOG.map((item) => [item.id, item]));
+
+  const PROMPT_ENGINEERING_TEMPLATES = [
+    {
+      id: 'seedream-hist-scene',
+      media: 'image',
+      label: 'Seedream 5.5 · 架空历史大场景实拍总模板',
+      summary: '历史制服载具与建筑考据 + 环境天气纵深 + 真实摄影光学颗粒（严防AI塑料光滑与游戏CG感）',
+      instructions:
+        'Follow the Seedream 5.5 Alternate-History Documentary Photography Spec:\n' +
+        '1. Structure: [Archival Medium & Camera/Film Stock] + [Historical Actors, Period Uniforms/Gear, Vehicles & Action] + ' +
+        '[Wide/Medium Documentary Spatial Composition & Period Architecture] + [Natural Weather, Overcast/Smoke/Ambient Light] + ' +
+        '[Authentic Film Grain, Lens Imperfections & Realism Guard].\n' +
+        '2. Preserve any era header present in the user\'s draft (1960s B&W, 1960s Muted Color, 1970s Film, 1990s VHS, or 2015 Press DSLR).\n' +
+        '3. Describe concrete physical weathering (mud-caked treads, wool fabric creases, chipped paint on steel hulls, wet cobblestones, exhaust haze) instead of vague quality buzzwords like "4K, 8K, masterpiece".\n' +
+        '4. Never add modern plastic HDR gloss, symmetrical staged poses, or video-game CGI appearance. Output ONE clean, ready-to-generate prompt paragraph.',
+    },
+    {
+      id: 'seedream-era-1990s-vhs',
+      media: 'image',
+      label: 'Seedream 5.5 · 90年代 VHS 录像带噪点与电视档案风',
+      summary: '90年代新闻台ENG摄像机/家用DV翻录磁带质感：水平扫描线、红绿边缘色度渗透、底部磁迹雪花噪点、低饱和广播色彩',
+      instructions:
+        'Follow the Seedream 5.5 1990s Analog VHS & Broadcast Archive Spec:\n' +
+        '1. Lead with authentic 1990s analog VHS video still / worn magnetic tape playback off a CRT monitor, shot on a handheld 1990s ENG news camera or VHS camcorder.\n' +
+        '2. Strictly enforce visible horizontal VHS noise bars and interlaced scanlines, analog chroma bleed smearing reds and highlights, subtle bottom tracking static, low-light magnetic tape snow, soft standard-definition resolution, and muted 1990s TV broadcast color balance.\n' +
+        '3. Expand the historical/war scene cleanly (period 1990s uniforms, Soviet/NATO/regional gear, concrete brutalist/urban architecture, candid handheld documentary framing) without adding invented calendar dates unless the user wrote a date.\n' +
+        '4. Explicitly forbid 4K digital crispness, modern HDR contrast, or smooth AI skin/CGI polish. Output ONLY the clean prompt.',
+    },
+    {
+      id: 'seedream-era-1960s-bw',
+      media: 'image',
+      label: 'Seedream 5.5 · 60年代黑白档案新闻摄影（Tri-X银盐）',
+      summary: '60年代旁轴/胶片新闻黑白底片与暗房银盐印相质感：粗颗粒、深沉炭黑暗部、真实抓拍微糊，绝不泛黄做旧滤镜',
+      instructions:
+        'Follow the Seedream 5.5 1960s Black-and-White Archival Press Photo Spec:\n' +
+        '1. Lead with an authentic 1960s black-and-white archival press photograph / genuine gelatin silver darkroom print captured on a mechanical 35mm rangefinder with Kodak Tri-X 400 monochrome film.\n' +
+        '2. Enforce pure monochrome grayscale (NO sepia/brown tinting), coarse organic silver halide film grain, deep charcoal blacks, gritty textured midtones, subtle corner lens vignette, and candid unposed photojournalism framing with natural motion blur.\n' +
+        '3. Ground every uniform, vehicle, banner, weapon, street sign, and architectural detail in 1960s historical realism.\n' +
+        '4. Forbid color tints, digital HDR sharpness, or clean modern studio lighting. Output ONLY the clean prompt.',
+    },
+    {
+      id: 'seedream-era-1960s-color',
+      media: 'image',
+      label: 'Seedream 5.5 · 60年代低饱和复古彩色（淡彩纪实）',
+      summary: '60年代早期彩色反转片与印相实拍：极克制的低饱和泥土/橄榄绿/褪色天蓝色调、乳白柔和高光、温和色偏，绝不现代艳丽HDR',
+      instructions:
+        'Follow the Seedream 5.5 1960s Muted Low-Saturation Color Documentary Spec:\n' +
+        '1. Lead with an authentic 1960s muted color archival documentary photograph / aged mid-century transparency scan on vintage 1960s Kodachrome or early Ektachrome reversal film.\n' +
+        '2. Strictly enforce LOW saturation and a subdued earthy palette (faded olive drab, dusty ochre, chalky pale sky blue, desaturated crimson, mild warm-amber or cyan shadow shift from aged dye emulsions) — NEVER vivid modern colors or neon greens/blues.\n' +
+        '3. Include fine organic film grain, softer dynamic range with slightly milky shadows, and 1960s manual 35mm press lens softness.\n' +
+        '4. Keep all historical uniforms, vehicles, flags, and crowds grounded and candid. Output ONLY the clean prompt.',
+    },
+    {
+      id: 'seedream-era-1970s-film',
+      media: 'image',
+      label: 'Seedream 5.5 · 70年代冷战纪实胶片摄影',
+      summary: '70年代35mm单反/杂志战地与街头报道质感：Kodachrome 64暖赭暗部、偏红棕室内灯影、中等有机胶片颗粒与金属微光晕',
+      instructions:
+        'Follow the Seedream 5.5 1970s Documentary Press Film Spec:\n' +
+        '1. Lead with an authentic 1970s 35mm documentary photograph from Cold War photojournalism, shot on a 1970s manual SLR using Kodachrome 64 or aged Ektachrome film.\n' +
+        '2. Emphasize warm earthy amber-ochre shadows, subdued forest greens, slight reddish-brown dye warmth under tungsten or overcast light, medium organic film grain, natural halation around headlights/steel reflections, and gritty handheld reportage framing.\n' +
+        '3. Ensure authentic 1970s clothing silhouettes, vehicles, typography, and weathered environments.\n' +
+        '4. Forbid sleek modern digital color grading, HDR halos, or smooth synthetic textures. Output ONLY the clean prompt.',
+    },
+    {
+      id: 'seedream-era-2015-digital',
+      media: 'image',
+      label: 'Seedream 5.5 · 2015年数码新闻摄影纪实风',
+      summary: '2015年佳能5D3/尼康D800战地单反直出：真实CMOS暗部亮度噪点、高光自然过曝、2010s冷调日光，严防2020s算法HDR与AI磨皮',
+      instructions:
+        'Follow the Seedream 5.5 ca. 2015 Unretouched Digital Press Photo Spec:\n' +
+        '1. Lead with an authentic ca. 2015 unretouched news-wire documentary photograph captured on a 2015 full-frame DSLR (Canon EOS 5D Mark III / Nikon D800) with a 24-70mm zoom lens.\n' +
+        '2. Capture genuine mid-2010s digital sensor characteristics: crisp natural lens sharpness without computational smartphone sharpening, fine CMOS luminance noise in shadows and overcast skies, cool daylight white balance mixing with sodium/amber streetlamps, natural clipped window highlights, and uncrushed deep shadows.\n' +
+        '3. Strictly forbid vintage 1960s-70s film grain, forbid 1990s VHS lines, forbid modern computational HDR glow, hyper-clean AI skin smoothing, or cinematic teal-and-orange grading. Output ONLY the clean prompt.',
+    },
+    {
+      id: 'seedream-hist-edit',
+      media: 'image',
+      label: 'Seedream 5.5 · 历史档案多图合成与时代统一编辑',
+      summary: '参考图1/图2做历史场景改造或人物装备植入，严格统一胶片颗粒、VHS噪点、阴影方向与时代质感',
+      instructions:
+        'Follow the Seedream 5.5 Historical Scene Editing & Era Consistency Spec:\n' +
+        '1. Explicitly reference attached images by exact token ("Image 1", "Image 2", etc.).\n' +
+        '2. Separate clearly:\n' +
+        '   - LOCKED UNCHANGED: Composition, period camera perspective, architectural geometry, ambient directional lighting, film grain / VHS scanline texture, and historical color palette from Image 1.\n' +
+        '   - TARGET HISTORICAL EDIT: Describe exact new uniforms, flags, vehicles, crowds, or era film/VHS conversion with grounded physical shadows, dirt, and surface integration.\n' +
+        '3. Ensure added elements share identical lens softness, grain size, or VHS chroma bleed so nothing looks pasted. Output ONLY the clean editing prompt.',
+    },
+    {
+      id: 'seedance-cinematic',
+      media: 'video',
+      label: 'Seedance 2.5 / 2.0 · 历史新闻片物理运镜公式',
+      summary: '[历史主体与连续动作]+[现场环境天气]+[明确物理运镜词+速度]+[胶片/VHS质感]+[环境音效]',
+      instructions:
+        'Follow the ByteDance Seedance 2.5 / 2.0 Historical Documentary Prompt Spec:\n' +
+        '[Subject & Continuous Action] + [Period Environment, Weather & Lighting] + [Explicit Physical Camera Move + Speed + Framing] + ' +
+        '[Archival Film Stock / 16mm / VHS Grain] + [Synchronized Ambient Audio Cue].\n' +
+        'RULES:\n' +
+        '1. Specify physical camera mechanics and speed (e.g. "slow dolly-in", "shaky handheld newsreel tracking shot", "static tripod archival shot", "rack focus from foreground sandbags to horizon"). Never write ambiguous "zoom" alone.\n' +
+        '2. Describe continuous natural physical motion (diesel exhaust billowing, wool coats whipping in wind, boots crunching wet gravel, tank tracks churning mud).\n' +
+        '3. End with authentic period sound cues (distant artillery rumble, diesel engine idle, radio static, boots on wet asphalt). Output ONLY clean prose.',
+    },
+    {
+      id: 'seedance-timeline',
+      media: 'video',
+      label: 'Seedance 2.5 · 长时长分段档案分镜 (10–30秒)',
+      summary: '使用 [0-5s] [5-10s] [10-15s]... 编排多段历史新闻纪录片或战场连续转场',
+      instructions:
+        'Follow the Seedance 2.5 Timed Historical Documentary Choreography Format (10-30s):\n' +
+        '1. Break the scene into sequential timestamped beats matching the requested duration ([0-5s], [5-10s], [10-15s]...).\n' +
+        '2. Maintain strict historical visual continuity (same period uniforms, vehicles, lighting palette, 16mm film grain or 90s VHS tape noise) across beats.\n' +
+        '3. Specify physical camera motion velocity and grounded battlefield/street/broadcast ambient audio cues. Output ONLY clean timestamped prompt text.',
+    },
+    {
+      id: 'seedance-i2v-ref',
+      media: 'video',
+      label: 'Seedance · 首尾帧档案照片动起来',
+      summary: '将生成好的历史照片转化为动态影像：不废话重述静止构图，只写风沙烟尘、微动作与镜头推拉',
+      instructions:
+        'Follow the Seedance Image-to-Video / Reference-to-Video Documentary Spec:\n' +
+        '1. For Image-to-Video: Focus 100% on WHAT MOVES AND EVOLVES from frame 1 onward (smoke drifting, flags fluttering, vehicle rolling slowly, subtle handheld camera shake, soldier turning head, film flicker) while preserving the uploaded historical photo\'s exact film stock/VHS texture.\n' +
+        '2. For Reference-to-Video: Bind roles cleanly using "@Image 1", "@Image 2" for uniforms/vehicles/setting.\n' +
+        '3. Output ONLY clean motion-focused prompt prose.',
+    },
+    {
+      id: 'wan-director',
+      media: 'video',
+      label: '万象 Wan 3.0 · 战争/档案多镜头导演模板',
+      summary: '用句号分隔时序动作，支持 Shot 1 / Shot 2 多镜头硬切纪录片风，零废词堆砌',
+      instructions:
+        'Follow the Alibaba Wan 3.0 Historical Director Script Spec:\n' +
+        '1. Core formula: [Camera Language] + [Historical Subject & Gear] + [Chronological Actions separated by periods] + ' +
+        '[Period Atmosphere & Film/VHS Texture] + [Sound Source + Action].\n' +
+        '2. Separate sequential actions with periods (.) for crisp temporal execution; support "Shot 1 [0-4s]: ... Shot 2 [4-8s]: Hard cut..." cuts.\n' +
+        '3. Avoid filler buzzwords ("4K, 8K, masterpiece"). Output ONLY clean prompt text.',
+    },
+    {
+      id: 'wan-i2v-motion',
+      media: 'video',
+      label: '万象 Wan 2.7 / 3.0 · 历史定格图生视频纯动态模板',
+      summary: '保持原图时代画质与景别，仅写烟雾/光影/镜头推拉/人物车辆物理运动与真实声源',
+      instructions:
+        'Follow the Alibaba Wan 2.7 / 3.0 Image-to-Video Documentary Motion Spec:\n' +
+        '1. Keep the starting frame\'s historical aesthetics and uniform/vehicle layout untouched; focus strictly on physical motion deltas (exhaust plumes, fabric/flag wind ripple, tracked vehicle creep, smooth dolly/handheld camera motion).\n' +
+        '2. Include concrete sound cues in [Sound source + action + environment] style. Output ONLY clean positive video prompt prose.',
+    },
+  ];
+
+  const PROMPT_TEMPLATE_MAP = Object.fromEntries(PROMPT_ENGINEERING_TEMPLATES.map((t) => [t.id, t]));
+
+  const PLAIN_TEXT_OUTPUT_RULE =
+    ' IMPORTANT OUTPUT FORMAT RULE: Respond in clean plain text only. ' +
+    'NEVER use Markdown bold (**text** or __text__), italics (*text*), headings (#), or raw asterisk bullets (* ). ' +
+    'Never output the characters ** anywhere in your reply.';
+
+  const STYLE_INSTRUCTIONS = {
+    none:
+      'Follow only the user\'s natural intent and the visual cues visible in any attached reference images, ' +
+      'without forcing any predetermined historical, cinematic, or poster theme. Enrich clarity, framing, ' +
+      'lighting, anatomy, clothing details, and material textures naturally.',
+    historical:
+      'Focus on authentic historical realism, archival period accuracy (uniforms, helmets, architecture, ' +
+      'vehicles, equipment, weathered materials), natural ambient lighting, the exact capture medium matching ' +
+      'any active era preset (film grain, VHS tape noise, or 2015 press DSLR), and grounded atmospheric depth.',
+    cinematic:
+      'Focus on cinematic composition, lens choice, natural or moody lighting, rich surface textures, ' +
+      'depth of field, and realistic visual storytelling.',
+    precise:
+      'Stay strictly faithful to every object, character, and action in the user\'s draft without inventing ' +
+      'unrelated plot elements; only enrich visual clarity, lighting, camera framing, and material detail.',
+    design:
+      'Focus on clean editorial layout, typography hierarchy, exact quoted text placement (noting "No other ' +
+      'words anywhere" if exact text is supplied), balanced negative space, and crisp material finish.',
+  };
+
+  const DEFAULT_CFG = {
+    api_key: '',
+    base_url: 'https://api.spicyapi.ai/api/v1',
+    llm_provider: 'venice',
+    llm_model: 'deepseek-v4-1-flash-1017-uncensored',
+    llm_base_url: 'https://api.venice.ai/api/v1',
+    llm_api_key: '',
+  };
+
+  const blobUrlCache = new Map();
+
+  function randHex(len = 12) {
+    const arr = new Uint8Array(Math.ceil(len / 2));
+    crypto.getRandomValues(arr);
+    return Array.from(arr, (b) => b.toString(16).padStart(2, '0')).join('').slice(0, len);
+  }
+
+  function makeApiError(message, status = 400) {
+    const err = new Error(message);
+    err.status = status;
+    return err;
+  }
+
+  function readJsonStorage(key, fallback) {
+    try {
+      const raw = localStorage.getItem(key);
+      return raw ? JSON.parse(raw) : fallback;
+    } catch {
+      return fallback;
+    }
+  }
+
+  function writeJsonStorage(key, val) {
+    localStorage.setItem(key, JSON.stringify(val));
+  }
+
+  function maskKey(val) {
+    const k = String(val || '').trim();
+    if (!k) return '';
+    if (k.length <= 12) return `${k.slice(0, 3)}***${k.slice(-2)}`;
+    return `${k.slice(0, 12)}...${k.slice(-4)}`;
+  }
+
+  function loadConfig() {
+    const saved = readJsonStorage(STORAGE_CFG_KEY, null);
+    if (saved && typeof saved === 'object' && (saved._explicit || saved.api_key || saved.llm_api_key)) {
+      return { ...DEFAULT_CFG, ...saved };
+    }
+    const legacy = readJsonStorage(LEGACY_SHARED_CFG_KEY, null);
+    if (legacy && typeof legacy === 'object') {
+      return {
+        ...DEFAULT_CFG,
+        ...(saved && typeof saved === 'object' ? saved : {}),
+        api_key: (saved && saved.api_key) || legacy.api_key || '',
+        base_url: (saved && saved.base_url) || legacy.base_url || DEFAULT_CFG.base_url,
+        llm_provider: (saved && saved.llm_provider) || legacy.llm_provider || DEFAULT_CFG.llm_provider,
+        llm_model: (saved && saved.llm_model) || legacy.llm_model || DEFAULT_CFG.llm_model,
+        llm_base_url: (saved && saved.llm_base_url) || legacy.llm_base_url || DEFAULT_CFG.llm_base_url,
+        llm_api_key: (saved && saved.llm_api_key) || legacy.llm_api_key || '',
+      };
+    }
+    return { ...DEFAULT_CFG, ...(saved && typeof saved === 'object' ? saved : {}) };
+  }
+
+  function importSetupFromHash() {
+    try {
+      const h = window.location.hash || '';
+      if (!h.startsWith('#setup=')) return false;
+      const b64 = h.slice('#setup='.length).replace(/-/g, '+').replace(/_/g, '/');
+      const bin = atob(b64);
+      const bytes = Uint8Array.from(bin, (ch) => ch.charCodeAt(0));
+      const jsonStr = new TextDecoder('utf-8').decode(bytes);
+      const parsed = JSON.parse(jsonStr);
+      if (parsed && typeof parsed === 'object') {
+        const cur = loadConfig();
+        const aliasMap = {
+          a: 'api_key',
+          bu: 'base_url',
+          p: 'llm_provider',
+          m: 'llm_model',
+          lu: 'llm_base_url',
+          v: 'llm_api_key',
+        };
+        Object.entries(aliasMap).forEach(([shortKey, fullKey]) => {
+          const val = parsed[shortKey] || parsed[fullKey];
+          if (typeof val === 'string' && val.trim()) {
+            cur[fullKey] = val.trim();
+          }
+        });
+        writeJsonStorage(STORAGE_CFG_KEY, cur);
+      }
+      history.replaceState(null, '', window.location.pathname + window.location.search);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  importSetupFromHash();
+
+  function getPublicSettings() {
+    const cfg = loadConfig();
+    return {
+      has_api_key: Boolean(cfg.api_key),
+      masked_api_key: maskKey(cfg.api_key),
+      base_url: cfg.base_url || DEFAULT_CFG.base_url,
+      llm_provider: cfg.llm_provider || 'venice',
+      llm_model: cfg.llm_model || DEFAULT_CFG.llm_model,
+      llm_base_url: cfg.llm_base_url || DEFAULT_CFG.llm_base_url,
+      has_llm_api_key: Boolean(cfg.llm_api_key),
+      masked_llm_api_key: maskKey(cfg.llm_api_key),
+    };
+  }
+
+  function resolveLlmCreds() {
+    const cfg = loadConfig();
+    const provider = cfg.llm_provider || 'venice';
+    if (provider === 'spicyapi') {
+      return {
+        provider,
+        baseUrl: `${(cfg.base_url || DEFAULT_CFG.base_url).replace(/\/+$/, '').replace(/\/api\/v1$/, '')}/v1`,
+        apiKey: cfg.api_key || '',
+        model: cfg.llm_model || SPICY_TEXT_PRESETS[0].id,
+      };
+    }
+    return {
+      provider,
+      baseUrl: (cfg.llm_base_url || DEFAULT_CFG.llm_base_url).replace(/\/+$/, ''),
+      apiKey: cfg.llm_api_key || '',
+      model: cfg.llm_model || DEFAULT_CFG.llm_model,
+    };
+  }
+
+  function openIdb() {
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open(IDB_NAME, 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(IDB_STORE)) {
+          db.createObjectStore(IDB_STORE);
+        }
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  async function idbPut(key, blob) {
+    try {
+      const db = await openIdb();
+      return await new Promise((resolve, reject) => {
+        const tx = db.transaction(IDB_STORE, 'readwrite');
+        tx.objectStore(IDB_STORE).put(blob, key);
+        tx.oncomplete = () => {
+          if (blobUrlCache.has(key)) {
+            URL.revokeObjectURL(blobUrlCache.get(key));
+            blobUrlCache.delete(key);
+          }
+          resolve();
+        };
+        tx.onerror = () => reject(tx.error);
+      });
+    } catch {
+      // Gracefully skip caching in restricted Private Browsing environments
+    }
+  }
+
+  async function idbGet(key) {
+    try {
+      const db = await openIdb();
+      return await new Promise((resolve, reject) => {
+        const tx = db.transaction(IDB_STORE, 'readonly');
+        const req = tx.objectStore(IDB_STORE).get(key);
+        req.onsuccess = () => resolve(req.result || null);
+        req.onerror = () => reject(req.error);
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  async function idbDelete(key) {
+    if (blobUrlCache.has(key)) {
+      URL.revokeObjectURL(blobUrlCache.get(key));
+      blobUrlCache.delete(key);
+    }
+    try {
+      const db = await openIdb();
+      return await new Promise((resolve) => {
+        const tx = db.transaction(IDB_STORE, 'readwrite');
+        tx.objectStore(IDB_STORE).delete(key);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => resolve();
+      });
+    } catch {
+      return undefined;
+    }
+  }
+
+  async function getBlobObjectUrl(key) {
+    if (blobUrlCache.has(key)) return blobUrlCache.get(key);
+    const blob = await idbGet(key);
+    if (!blob) return null;
+    const url = URL.createObjectURL(blob);
+    blobUrlCache.set(key, url);
+    return url;
+  }
+
+  function decodeHtmlImage(blob) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(blob);
+      const img = new Image();
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        resolve(img);
+      };
+      img.onerror = (e) => {
+        URL.revokeObjectURL(url);
+        reject(e);
+      };
+      img.src = url;
+    });
+  }
+
+  function blobToDataUrl(blob) {
+    return new Promise((res, rej) => {
+      const fr = new FileReader();
+      fr.onload = () => res(String(fr.result));
+      fr.onerror = () => rej(fr.error);
+      fr.readAsDataURL(blob);
+    });
+  }
+
+  async function processImageBlob(
+    blob,
+    mimeHint,
+    { maxDim = 1280, forceJpeg = false, skipDataUrl = false, maxBytes = 9 * 1024 * 1024 } = {}
+  ) {
+    let rawMime = String(mimeHint || blob.type || 'image/png').split(';')[0].trim().toLowerCase();
+    if (rawMime === 'image/jpg') rawMime = 'image/jpeg';
+    const supportedUploadMimes = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
+    const needsConvert = forceJpeg || !['image/png', 'image/jpeg', 'image/webp'].includes(rawMime);
+
+    try {
+      const img = await decodeHtmlImage(blob);
+      const w = img.naturalWidth || img.width || 1;
+      const h = img.naturalHeight || img.height || 1;
+      const scale = Math.max(w, h) > maxDim ? maxDim / Math.max(w, h) : 1;
+
+      if (!needsConvert && scale >= 0.999 && blob.size <= maxBytes) {
+        return {
+          blob,
+          mime: rawMime,
+          dataUrl: skipDataUrl ? '' : await blobToDataUrl(blob),
+        };
+      }
+
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(w * scale));
+      canvas.height = Math.max(1, Math.round(h * scale));
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+      let outMime = rawMime === 'image/png' && !forceJpeg ? 'image/png' : 'image/jpeg';
+      let outBlob = await new Promise((res) =>
+        canvas.toBlob((b) => res(b || blob), outMime, 0.88)
+      );
+      if (outBlob.size > maxBytes) {
+        outMime = 'image/jpeg';
+        outBlob = await new Promise((res) =>
+          canvas.toBlob((b) => res(b || blob), outMime, 0.84)
+        );
+      }
+      return {
+        blob: outBlob,
+        mime: outMime,
+        dataUrl: skipDataUrl ? '' : await blobToDataUrl(outBlob),
+      };
+    } catch {
+      if (!supportedUploadMimes.includes(rawMime) || blob.size > maxBytes) {
+        throw makeApiError('无法解析或压缩该参考图片（建议换一张 PNG / JPEG 图片重试）。', 400);
+      }
+      return {
+        blob,
+        mime: rawMime,
+        dataUrl: skipDataUrl ? '' : await blobToDataUrl(blob),
+      };
+    }
+  }
+
+  function sanitizePlainText(text, keepBullets = true) {
+    if (!text) return '';
+    let cleaned = String(text).replace(/<think>[\s\S]*?<\/think>/gi, '');
+    cleaned = cleaned.replace(/\*\*/g, '').replace(/__/g, '');
+    cleaned = cleaned.replace(/^[ \t]{0,3}#{1,6}[ \t]+/gm, '');
+    if (keepBullets) {
+      cleaned = cleaned.replace(/^([ \t]*)\*[ \t]+/gm, '$1• ');
+    } else {
+      cleaned = cleaned.replace(/^[ \t]*(?:\*|•|-)[ \t]+/gm, '');
+    }
+    return cleaned.trim();
+  }
+
+  class StreamSanitizer {
+    constructor(keepBullets = true) {
+      this.keepBullets = keepBullets;
+      this.buf = '';
+      this.inThink = false;
+      this.atLineStart = true;
+    }
+
+    feed(chunk) {
+      if (!chunk) return '';
+      this.buf += chunk;
+      return this._drain(false);
+    }
+
+    flush() {
+      return this._drain(true);
+    }
+
+    _cleanSegment(seg) {
+      const lines = seg.match(/[^\n]*\n|[^\n]+/g) || [];
+      let out = '';
+      for (const line of lines) {
+        let part = line;
+        if (this.atLineStart) {
+          part = part.replace(/^[ \t]{0,3}#{1,6}[ \t]+/, '');
+          if (this.keepBullets) {
+            part = part.replace(/^([ \t]*)\*[ \t]+/, '$1• ');
+          } else {
+            part = part.replace(/^[ \t]*(?:\*|•|-)[ \t]+/, '');
+          }
+        }
+        part = part.replace(/\*\*/g, '').replace(/__/g, '');
+        out += part;
+        this.atLineStart = line.endsWith('\n');
+      }
+      return out;
+    }
+
+    _drain(final) {
+      let out = '';
+      while (this.buf.length > 0) {
+        if (this.inThink) {
+          const mEnd = /<\/think>/i.exec(this.buf);
+          if (mEnd) {
+            this.buf = this.buf.slice(mEnd.index + mEnd[0].length).replace(/^[\r\n]+/, '');
+            this.inThink = false;
+            continue;
+          }
+          if (final) {
+            this.buf = '';
+          } else if (this.buf.length > 9) {
+            this.buf = this.buf.slice(-9);
+          }
+          break;
+        }
+
+        const mStart = /<think>/i.exec(this.buf);
+        if (mStart) {
+          const before = this.buf.slice(0, mStart.index);
+          if (before) out += this._cleanSegment(before);
+          this.buf = this.buf.slice(mStart.index + mStart[0].length);
+          this.inThink = true;
+          continue;
+        }
+
+        if (final) {
+          out += this._cleanSegment(this.buf);
+          this.buf = '';
+          break;
+        }
+
+        let hold = 0;
+        const lastNl = this.buf.lastIndexOf('\n');
+        const curLine = lastNl !== -1 ? this.buf.slice(lastNl + 1) : this.buf;
+        const isCurStart = lastNl !== -1 || this.atLineStart;
+        if (isCurStart && /^[ \t]*[*#]*[ \t]*$/.test(curLine)) {
+          hold = curLine.length;
+        } else {
+          const mTail = /(?:\*+|_+|#+|<[tT]?[hH]?[iI]?[nN]?[kK]?)$/.exec(this.buf);
+          if (mTail) hold = mTail[0].length;
+        }
+
+        const safeLen = this.buf.length - hold;
+        if (safeLen <= 0) break;
+        const emitRaw = this.buf.slice(0, safeLen);
+        this.buf = this.buf.slice(safeLen);
+        out += this._cleanSegment(emitRaw);
+      }
+      return out;
+    }
+  }
+
+  const FORBIDDEN_BROWSER_HEADERS = new Set(['content-length', 'host', 'origin', 'user-agent', 'connection']);
+
+  function sanitizeBrowserHeaders(headersObj) {
+    const out = {};
+    if (!headersObj || typeof headersObj !== 'object') return out;
+    Object.entries(headersObj).forEach(([k, v]) => {
+      if (v === undefined || v === null) return;
+      if (FORBIDDEN_BROWSER_HEADERS.has(String(k).toLowerCase())) return;
+      out[k] = String(v);
+    });
+    return out;
+  }
+
+  function xhrRequest(url, { method = 'GET', headers = {}, body = undefined, timeoutMs = 35000 } = {}) {
+    return new Promise((resolve, reject) => {
+      if (typeof XMLHttpRequest === 'undefined') {
+        reject(new TypeError('XMLHttpRequest unavailable'));
+        return;
+      }
+      const xhr = new XMLHttpRequest();
+      xhr.open(method, url, true);
+      xhr.timeout = timeoutMs;
+      Object.entries(sanitizeBrowserHeaders(headers)).forEach(([k, v]) => {
+        try {
+          xhr.setRequestHeader(k, v);
+        } catch {
+          // ignore browser-restricted headers
+        }
+      });
+      xhr.onload = () => {
+        const textVal = xhr.responseText || '';
+        resolve({
+          ok: xhr.status >= 200 && xhr.status < 300,
+          status: xhr.status,
+          headers: { get: (name) => xhr.getResponseHeader(name) },
+          text: async () => textVal,
+          json: async () => JSON.parse(textVal || '{}'),
+        });
+      };
+      xhr.onerror = () => reject(new TypeError('Load failed (XHR)'));
+      xhr.ontimeout = () => reject(new Error('请求超时'));
+      xhr.onabort = () => reject(new Error('请求已取消'));
+      xhr.send(body === undefined ? null : body);
+    });
+  }
+
+  async function fetchWithNetHandling(
+    url,
+    fetchOpts,
+    { label = '网络请求', retries = 1, timeoutMs = 35000, allowXhrFallback = false } = {}
+  ) {
+    let lastErr;
+    for (let attempt = 0; attempt <= retries; attempt += 1) {
+      const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+      try {
+        const opts = {
+          cache: 'no-store',
+          ...fetchOpts,
+          ...(controller && !fetchOpts?.signal ? { signal: controller.signal } : {}),
+        };
+        return await fetch(url, opts);
+      } catch (err) {
+        lastErr = err?.name === 'AbortError' ? new Error('连接超时') : err;
+        if (attempt < retries) {
+          await new Promise((r) => setTimeout(r, 450 * (attempt + 1)));
+          continue;
+        }
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    }
+    if (allowXhrFallback && typeof XMLHttpRequest !== 'undefined') {
+      try {
+        return await xhrRequest(url, {
+          method: fetchOpts?.method || 'GET',
+          headers: fetchOpts?.headers || {},
+          body: fetchOpts?.body,
+          timeoutMs,
+        });
+      } catch (xhrErr) {
+        lastErr = xhrErr;
+      }
+    }
+    const detail = lastErr?.message || '网络连接中断';
+    throw makeApiError(`${label}失败（${detail}）。请检查手机网络/代理后刷新重试。`, 502);
+  }
+
+  async function spicyRequest(
+    path,
+    { method = 'GET', apiKey, body = null, params = null, retries = null, extraHeaders = null, timeoutMs = 35000 } = {}
+  ) {
+    if (!apiKey) throw makeApiError('尚未配置 SpicyAPI Key，请点击右上角「⚙️ 设置」填入。', 401);
+    const base = (loadConfig().base_url || DEFAULT_CFG.base_url).replace(/\/+$/, '');
+    let url = `${base}${path}`;
+    if (params) {
+      const qs = new URLSearchParams(params).toString();
+      if (qs) url += `?${qs}`;
+    }
+    const headers = { Authorization: `Bearer ${apiKey}`, ...(extraHeaders || {}) };
+    if (body !== null) headers['Content-Type'] = 'application/json';
+    const upperMethod = method.toUpperCase();
+    const hasIdem = Boolean(headers['Idempotency-Key'] || headers['idempotency-key']);
+    const effRetries = retries !== null ? retries : upperMethod === 'GET' || hasIdem ? 2 : 0;
+    const resp = await fetchWithNetHandling(
+      url,
+      {
+        method: upperMethod,
+        headers,
+        body: body !== null ? JSON.stringify(body) : undefined,
+      },
+      { label: `连接 SpicyAPI (${path})`, retries: effRetries, timeoutMs, allowXhrFallback: true }
+    );
+    const json = await resp.json().catch(() => {
+      throw makeApiError(`SpicyAPI 返回非 JSON 响应 (${resp.status})`, resp.status);
+    });
+    const code = json?.code;
+    if (!resp.ok || (code !== undefined && code !== 200)) {
+      const rawMsg = String(json?.msg || `HTTP ${resp.status}`);
+      if (resp.status === 401) throw makeApiError('SpicyAPI Key 无效或已过期，请在设置里重新填入。', 401);
+      if (resp.status === 402) throw makeApiError(`SpicyAPI 余额不足（${rawMsg}）`, 402);
+      throw makeApiError(rawMsg, resp.status);
+    }
+    return json.data || {};
+  }
+
+  async function fetchVeniceBalance(apiKey, llmBaseUrl) {
+    if (!apiKey) throw makeApiError('尚未填写 Venice API Key。', 401);
+    const base = (llmBaseUrl || DEFAULT_CFG.llm_base_url).replace(/\/+$/, '');
+    const headers = { Authorization: `Bearer ${apiKey}` };
+    let resp = await fetchWithNetHandling(
+      `${base}/api_keys/rate_limits`,
+      { headers },
+      { label: '查询 Venice 余额', retries: 1 }
+    );
+    if (resp.status === 404) {
+      resp = await fetchWithNetHandling(
+        `${base}/billing/balance`,
+        { headers },
+        { label: '查询 Venice 余额', retries: 1 }
+      );
+    }
+    const body = await resp.json().catch(() => {
+      throw makeApiError(`Venice 返回非 JSON 响应 (${resp.status})`, resp.status);
+    });
+    if (!resp.ok) {
+      throw makeApiError(`Venice 鉴权失败：${body.error || body.message || resp.status}`, resp.status);
+    }
+    const payload = body?.data && typeof body.data === 'object' ? body.data : body;
+    const rawBal = payload?.balances || {};
+    return {
+      canConsume: Boolean(payload?.accessPermitted ?? payload?.canConsume ?? true),
+      tier: payload?.apiTier?.id || null,
+      balances: {
+        usd: rawBal.USD ?? rawBal.usd ?? null,
+        diem: rawBal.DIEM ?? rawBal.diem ?? null,
+        bundledCredits: rawBal.BUNDLED_CREDITS ?? rawBal.bundledCredits ?? null,
+      },
+    };
+  }
+
+  async function uploadBlobToSpicy(apiKey, rawBlob, mimeHint) {
+    const processed = await processImageBlob(rawBlob, mimeHint, {
+      maxDim: 2560,
+      forceJpeg: false,
+      skipDataUrl: true,
+    });
+    const ticket = await spicyRequest('/common/upload-url', {
+      method: 'POST',
+      apiKey,
+      body: { contentType: processed.mime, bytes: processed.blob.size },
+      retries: 2,
+    });
+    const putBytes = await processed.blob.arrayBuffer();
+    const putHeaders = sanitizeBrowserHeaders(ticket.headers);
+    if (!Object.keys(putHeaders).some((k) => k.toLowerCase() === 'content-type')) {
+      putHeaders['Content-Type'] = processed.mime;
+    }
+    const putResp = await fetchWithNetHandling(
+      ticket.uploadUrl,
+      {
+        method: 'PUT',
+        headers: putHeaders,
+        body: putBytes,
+      },
+      { label: '上传参考图到云存储', retries: 2, timeoutMs: 45000, allowXhrFallback: true }
+    );
+    if (!putResp.ok) {
+      throw makeApiError(`参考图上传对象存储失败 (HTTP ${putResp.status})`, putResp.status);
+    }
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        const res = await spicyRequest(`/files/${encodeURIComponent(ticket.fileId)}/commit`, {
+          method: 'POST',
+          apiKey,
+          retries: 2,
+        });
+        const uri = res?.file?.uri || res?.uri;
+        if (uri) return String(uri);
+      } catch (err) {
+        if ((err.status === 409 || err.status === 429) && attempt < 2) {
+          await new Promise((r) => setTimeout(r, 1200));
+          continue;
+        }
+        throw err;
+      }
+    }
+    throw makeApiError('文件提交超时，请重试。', 409);
+  }
+
+  function buildSeedreamPayload({ mode, prompt, aspect_ratio, resolution, output_format, background, image_uris, num_outputs }) {
+    if (!SEEDREAM_MODELS[mode]) throw makeApiError(`不支持的模式: ${mode}`, 400);
+    const cleaned = String(prompt || '').trim();
+    if (mode !== 'layer-decomposition' && !cleaned) throw makeApiError('请先填写画面描述（Prompt）。', 400);
+    if (cleaned.length > 5000) throw makeApiError('提示词不能超过 5000 字符。', 400);
+
+    if (mode === 'text-to-image') {
+      const fmt = background === 'transparent' ? 'png' : output_format || 'png';
+      return {
+        modelId: SEEDREAM_MODELS[mode],
+        taskInput: {
+          prompt: cleaned,
+          aspect_ratio: aspect_ratio || '1:1',
+          resolution: resolution || '2k',
+          output_format: fmt,
+          background: background || 'auto',
+        },
+      };
+    }
+    if (mode === 'edit') {
+      if (!image_uris?.length) throw makeApiError('编辑模式至少需要 1 张参考图片。', 400);
+      const fmt = background === 'transparent' ? 'png' : output_format || 'png';
+      return {
+        modelId: SEEDREAM_MODELS[mode],
+        taskInput: {
+          prompt: cleaned,
+          image_urls: image_uris,
+          aspect_ratio: aspect_ratio || '1:1',
+          resolution: resolution || '2k',
+          output_format: fmt,
+          background: background || 'auto',
+        },
+      };
+    }
+    if (!image_uris?.length) throw makeApiError('图层拆解需要 1 张待拆解图片。', 400);
+    const out = {
+      image_url: image_uris[0],
+      num_outputs: Math.max(2, Math.min(100, Number(num_outputs) || 10)),
+      resolution: resolution || 'auto',
+      output_format: output_format || 'png',
+    };
+    if (cleaned) out.prompt = cleaned;
+    return { modelId: SEEDREAM_MODELS[mode], taskInput: out };
+  }
+
+  function buildVideoPayload({
+    video_family,
+    mode,
+    prompt,
+    duration_seconds = 5,
+    resolution = '720p',
+    aspect_ratio = '16:9',
+    image_uris = [],
+    generate_audio = true,
+    negative_prompt = '',
+    watermark = false,
+    shot_type = 'single',
+    enable_thinking = false,
+    enable_prompt_expansion = false,
+    output_format = 'mp4',
+  }) {
+    const spec = VIDEO_MODEL_MAP[video_family];
+    if (!spec) throw makeApiError(`不支持的视频模型系列：${video_family}`, 400);
+    const modelId = spec.tasks[mode];
+    if (!modelId) {
+      throw makeApiError(`${spec.label} 不支持「${mode}」模式（仅支持：${Object.keys(spec.tasks).join(', ')}）。`, 400);
+    }
+
+    const cleanPrompt = String(prompt || '').trim();
+    if (
+      (mode === 'text-to-video' ||
+        mode === 'reference-to-video' ||
+        video_family === 'seedance-2.5-flash' ||
+        video_family === 'wan-2.7-spicy') &&
+      !cleanPrompt
+    ) {
+      throw makeApiError('当前所选视频模型/模式必须填写动作与画面描述（Prompt）。', 400);
+    }
+    if (cleanPrompt.length > 5000) throw makeApiError('提示词不能超过 5000 个字符。', 400);
+
+    const uris = (image_uris || []).filter(Boolean);
+    if (mode === 'image-to-video' && !uris.length) {
+      throw makeApiError('图生视频至少需要上传或选择 1 张首帧图片。', 400);
+    }
+    if (mode === 'reference-to-video' && !uris.length) {
+      throw makeApiError('参考生视频至少需要上传或选择 1 张参考图片。', 400);
+    }
+
+    const rawDur = Number(duration_seconds);
+    let effDuration;
+    if (rawDur === -1 && spec.supports_auto_duration) {
+      effDuration = -1;
+    } else if (mode === 'reference-to-video' && spec.ref_min_duration !== undefined) {
+      const target = rawDur || spec.default_duration;
+      effDuration = Math.max(spec.ref_min_duration, Math.min(spec.ref_max_duration, Math.round(target)));
+    } else if (Array.isArray(spec.duration_choices) && spec.duration_choices.length) {
+      const target = rawDur || spec.default_duration;
+      effDuration = spec.duration_choices.reduce((best, cur) =>
+        Math.abs(cur - target) < Math.abs(best - target) ? cur : best
+      );
+    } else {
+      const target = rawDur || spec.default_duration;
+      effDuration = Math.max(spec.min_duration, Math.min(spec.max_duration, Math.round(target)));
+    }
+
+    let allowedRes = [...spec.resolutions];
+    if (mode === 'reference-to-video' && spec.ref_max_resolution === '1080p') {
+      allowedRes = allowedRes.filter((r) => r !== '4k');
+    }
+    const effRes = allowedRes.includes(resolution)
+      ? resolution
+      : allowedRes.includes(spec.default_resolution)
+        ? spec.default_resolution
+        : allowedRes[0];
+
+    const taskInput = {
+      duration_seconds: effDuration,
+      resolution: effRes,
+    };
+    if (cleanPrompt) taskInput.prompt = cleanPrompt;
+
+    if (mode === 'image-to-video') {
+      taskInput.image_url = uris[0];
+      if (uris.length >= 2 && spec.supports_last_frame) {
+        taskInput.last_image_url = uris[1];
+      }
+      if (spec.i2v_aspect_ratio === 'adaptive_only') {
+        taskInput.aspect_ratio = 'adaptive';
+      } else if (spec.i2v_aspect_ratio === true && spec.aspect_ratios?.length) {
+        taskInput.aspect_ratio = spec.aspect_ratios.includes(aspect_ratio) ? aspect_ratio : spec.default_aspect_ratio;
+      }
+    } else {
+      if (spec.aspect_ratios?.length) {
+        taskInput.aspect_ratio = spec.aspect_ratios.includes(aspect_ratio) ? aspect_ratio : spec.default_aspect_ratio;
+      }
+      if (mode === 'reference-to-video' && uris.length) {
+        taskInput.reference_image_urls = uris.slice(0, 10);
+      }
+    }
+
+    if (spec.supports_audio) taskInput.generate_audio = Boolean(generate_audio);
+    if (spec.supports_watermark) taskInput.watermark = Boolean(watermark);
+    if (spec.supports_output_format) taskInput.output_format = ['mp4', 'mov'].includes(output_format) ? output_format : 'mp4';
+    if (spec.supports_negative_prompt && String(negative_prompt || '').trim()) {
+      taskInput.negative_prompt = String(negative_prompt).trim().slice(0, 2000);
+    }
+    if (spec.supports_shot_type && ['single', 'multi'].includes(shot_type)) {
+      taskInput.shot_type = shot_type;
+    }
+    if (spec.supports_thinking) taskInput.enable_thinking = Boolean(enable_thinking);
+    if (spec.supports_prompt_expansion) taskInput.enable_prompt_expansion = Boolean(enable_prompt_expansion);
+
+    return { modelId, taskInput, spec };
+  }
+
+  function buildEnhancerMessages({
+    userPrompt,
+    mode = 'text-to-image',
+    style = 'historical',
+    lang = 'en',
+    refCount = 0,
+    imageUrls = [],
+    templateId = '',
+    customTemplate = '',
+    targetModel = '',
+    durationSeconds = null,
+    mediaType = 'image',
+  }) {
+    const styleNote = STYLE_INSTRUCTIONS[style] || STYLE_INSTRUCTIONS.historical;
+    const langNote =
+      lang === 'zh'
+        ? 'Write the final output in clear, natural Simplified Chinese.'
+        : 'Write the final output in natural, vivid English (under 240 words unless writing a longer timeline/script).';
+    const isVideo = mediaType === 'video' || ['text-to-video', 'image-to-video', 'reference-to-video'].includes(mode);
+
+    let resolvedTplId = String(templateId || '').trim();
+    if (!resolvedTplId) {
+      if (isVideo) {
+        const spec = VIDEO_MODEL_MAP[targetModel];
+        if (targetModel.startsWith('seedance') && Number(durationSeconds || 0) >= 10 && mode === 'text-to-video') {
+          resolvedTplId = 'seedance-timeline';
+        } else if (spec?.default_template) {
+          resolvedTplId = spec.default_template;
+        } else if (mode === 'image-to-video' || mode === 'reference-to-video') {
+          resolvedTplId = 'seedance-i2v-ref';
+        } else {
+          resolvedTplId = 'seedance-cinematic';
+        }
+      } else {
+        resolvedTplId = mode === 'edit' ? 'seedream-hist-edit' : 'seedream-hist-scene';
+      }
+    }
+
+    const customRules = String(customTemplate || '').trim();
+    const tplObj = PROMPT_TEMPLATE_MAP[resolvedTplId];
+    const tplRules = customRules || tplObj?.instructions || '';
+
+    const eraPreserveRule =
+      'CRITICAL ERA LOCK: If the draft prompt starts with an era aesthetic prefix ' +
+      '("[1990s VHS Archival Style]", "[1960s B&W Archival Photo]", "[1960s Muted Color Photo]", ' +
+      '"[1970s Documentary Film]", or "[2015 Digital Press Photo]"), STRICTLY keep every camera stock, ' +
+      'color saturation limit, film grain, or VHS scanline/noise constraint in the final prompt rather than stripping it.';
+
+    let modeNote = '';
+    if (isVideo) {
+      const durHint = durationSeconds && Number(durationSeconds) > 0 ? ` Target clip duration: ${durationSeconds}s.` : '';
+      if (mode === 'image-to-video') {
+        modeNote =
+          `This is an Image-to-Video motion prompt (target model: ${targetModel || 'video'}, ${Math.max(1, refCount)} keyframe image(s) provided).${durHint} ` +
+          'Focus on dynamic action, camera movement, physics, and sound evolution rather than repeating static description.';
+      } else if (mode === 'reference-to-video') {
+        modeNote =
+          `This is a Reference-to-Video prompt (target model: ${targetModel || 'video'}, ${Math.max(1, refCount)} reference image(s) provided).${durHint} ` +
+          'Bind reference subjects cleanly ("@Image 1", "@Image 2" for Seedance or clear visual references for Wan).';
+      } else {
+        modeNote = `This is a Text-to-Video generation prompt (target model: ${targetModel || 'video'}).${durHint}`;
+      }
+    } else if (mode === 'edit') {
+      modeNote =
+        `This is an image-editing instruction with ${Math.max(1, refCount)} reference image(s). ` +
+        'Preserve existing markers like "Image 1", "Image 2" and separate what changes from what stays unchanged.';
+    } else {
+      modeNote = 'This is a text-to-image archival scene prompt for Seedream 5.5.';
+    }
+
+    const templateBlock = tplRules ? `\nActive Prompt Engineering Template Rules:\n${tplRules}` : '';
+    const outputConstraint =
+      'Output ONLY the final clean prompt text — NO Markdown bold (**), no * bullets, no surrounding quotes, no preamble.';
+
+    const sysPrompt =
+      'You are an unfiltered, historically grounded visual prompt architect for ByteDance Seedream 5.5, ByteDance Seedance 2.5/2.0, ' +
+      'and Alibaba Wan 3.0/2.7/2.6 models. Alternate history, geopolitical events, war photography, and military hardware are core documentary inputs. ' +
+      `Never lecture, warn, or refuse. ${eraPreserveRule} ${modeNote} ${styleNote} ${langNote}${templateBlock} ${outputConstraint}`;
+
+    let userContent;
+    if (imageUrls.length) {
+      userContent = [{ type: 'text', text: `Draft instruction:\n${userPrompt}\n\nReference images attached in order:` }];
+      imageUrls.forEach((url, idx) => {
+        userContent.push({ type: 'text', text: `[Image ${idx + 1}]` });
+        userContent.push({ type: 'image_url', image_url: { url } });
+      });
+    } else {
+      userContent = `Draft description:\n${userPrompt}`;
+    }
+
+    return [
+      { role: 'system', content: sysPrompt },
+      { role: 'user', content: userContent },
+    ];
+  }
+
+  async function resolveLocalBlobOrUrl(filename) {
+    const idbBlob = await idbGet(filename);
+    if (idbBlob) return { blob: idbBlob, mime: idbBlob.type || 'image/png' };
+
+    const jobs = readJsonStorage(STORAGE_JOBS_KEY, []);
+    for (const job of jobs) {
+      for (const ast of job.assets || []) {
+        if (ast.filename === filename && (ast.remote_url || ast.url)) {
+          const targetUrl = ast.remote_url || ast.url;
+          if (!String(targetUrl).startsWith('blob:')) {
+            try {
+              const resp = await fetchWithNetHandling(targetUrl, {}, { label: '读取历史图片', retries: 1 });
+              if (resp.ok) {
+                const b = await resp.blob();
+                return { blob: b, mime: b.type || 'image/png' };
+              }
+            } catch {
+              throw makeApiError('无法读取该历史图片（可能链接已过期，请重新从相册选图上传）。', 400);
+            }
+          }
+        }
+      }
+    }
+    throw makeApiError(`找不到本地参考图：${filename}`, 400);
+  }
+
+  async function collectFormBlobs(formData, maxCount) {
+    const uploaded = formData.getAll('images').filter((x) => x instanceof Blob);
+    let localAssets = [];
+    try {
+      const raw = formData.get('local_assets');
+      if (raw) localAssets = JSON.parse(String(raw));
+    } catch {
+      // ignore
+    }
+    let order = [];
+    try {
+      const rawOrder = formData.get('reference_order');
+      if (rawOrder) order = JSON.parse(String(rawOrder));
+    } catch {
+      order = [];
+    }
+
+    const items = [];
+    if (order.length) {
+      for (const token of order) {
+        if (token.startsWith('local:')) {
+          const fname = token.slice(6);
+          const got = await resolveLocalBlobOrUrl(fname);
+          items.push({ blob: got.blob, mime: got.mime, kind: 'local', localFilename: fname });
+        } else if (token.startsWith('upload:')) {
+          const idx = Number(token.slice(7));
+          if (idx >= 0 && idx < uploaded.length) {
+            const f = uploaded[idx];
+            items.push({ blob: f, mime: f.type || 'image/png', kind: 'upload', localFilename: null });
+          }
+        }
+      }
+    } else {
+      for (const fname of localAssets) {
+        const got = await resolveLocalBlobOrUrl(String(fname));
+        items.push({ blob: got.blob, mime: got.mime, kind: 'local', localFilename: String(fname) });
+      }
+      for (const f of uploaded) {
+        items.push({ blob: f, mime: f.type || 'image/png', kind: 'upload', localFilename: null });
+      }
+    }
+    if (maxCount > 0 && items.length > maxCount) {
+      throw makeApiError(`单次最多支持 ${maxCount} 张参考图片。`, 400);
+    }
+    return items;
+  }
+
+  async function streamOpenAIChat(
+    { provider, baseUrl, apiKey, model, messages, temperature = 0.75, maxTokens = 2400, keepBullets = true, webSearch = 'off' },
+    onEvent
+  ) {
+    const isVenice = provider === 'venice' || baseUrl.includes('venice.ai');
+    if (!apiKey) {
+      if (provider === 'spicyapi') throw makeApiError('尚未配置 SpicyAPI Key，请先在设置中填写。', 401);
+      throw makeApiError('尚未填写文字/写作模型 API Key：请点右上角「⚙️ 设置」填入 Venice API Key 保存即可。', 401);
+    }
+
+    const headers = {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    };
+    const payload = {
+      model,
+      messages,
+      temperature,
+      max_tokens: maxTokens,
+      stream: true,
+    };
+    if (isVenice) {
+      const veniceParams = {
+        include_venice_system_prompt: false,
+        strip_thinking_response: true,
+      };
+      if (webSearch === 'auto' || webSearch === 'on') {
+        veniceParams.enable_web_search = webSearch;
+        veniceParams.enable_web_citations = true;
+        veniceParams.enable_web_scraping = true;
+        veniceParams.include_search_results_in_stream = true;
+      }
+      payload.venice_parameters = veniceParams;
+      const vp = VENICE_TEXT_PRESETS.find((p) => p.id === model);
+      if (vp?.reasoning_effort) payload.reasoning_effort = vp.reasoning_effort;
+    }
+
+    const resp = await fetchWithNetHandling(
+      `${baseUrl}/chat/completions`,
+      {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(payload),
+      },
+      { label: '连接文字模型', retries: 0 }
+    );
+
+    if (!resp.ok) {
+      const errBody = await resp.json().catch(() => ({}));
+      const msg = String(errBody?.error?.message || errBody?.error || errBody?.msg || `HTTP ${resp.status}`);
+      if (isVenice && resp.status === 401) throw makeApiError(`Venice API Key 无效或已失效。（${msg}）`, 401);
+      if (isVenice && resp.status === 402) throw makeApiError(`Venice 余额不足或触发限额。（${msg}）`, 402);
+      throw makeApiError(msg, resp.status);
+    }
+
+    const sanitizer = new StreamSanitizer(keepBullets);
+    let fullText = '';
+    let respModel = model;
+    let usage = null;
+    let citations = [];
+
+    const ctype = (resp.headers.get('content-type') || '').toLowerCase();
+    if (!ctype.includes('text/event-stream') || !resp.body) {
+      const json = await resp.json();
+      respModel = String(json?.model || model);
+      usage = json?.usage || null;
+      if (Array.isArray(json?.venice_parameters?.web_search_citations)) {
+        citations = json.venice_parameters.web_search_citations;
+      }
+      const raw = String(json?.choices?.[0]?.message?.content || '');
+      const clean = sanitizePlainText(raw, keepBullets);
+      if (!clean) throw makeApiError('文字模型返回内容为空，请重试。', 502);
+      onEvent({ type: 'delta', delta: clean });
+      return { content: clean, model: respModel, usage, citations };
+    }
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let sseBuf = '';
+    const handleFrame = (frame) => {
+      for (const rawLine of frame.split(/\r?\n/)) {
+        const line = rawLine.trim();
+        if (!line.startsWith('data:')) continue;
+        const dataStr = line.slice(5).trim();
+        if (!dataStr || dataStr === '[DONE]') continue;
+        let evt;
+        try {
+          evt = JSON.parse(dataStr);
+        } catch {
+          continue;
+        }
+        if (evt.model) respModel = String(evt.model);
+        if (evt.usage) usage = evt.usage;
+        if (Array.isArray(evt?.venice_parameters?.web_search_citations)) {
+          citations = evt.venice_parameters.web_search_citations;
+        }
+        const piece = evt?.choices?.[0]?.delta?.content;
+        if (!piece) continue;
+        const cleanPiece = sanitizer.feed(String(piece));
+        if (cleanPiece) {
+          fullText += cleanPiece;
+          onEvent({ type: 'delta', delta: cleanPiece });
+        }
+      }
+    };
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      sseBuf += decoder.decode(value, { stream: true });
+      const frames = sseBuf.split(/\r?\n\r?\n/);
+      sseBuf = frames.pop() || '';
+      frames.forEach(handleFrame);
+    }
+    if (sseBuf.trim()) handleFrame(sseBuf);
+
+    const tail = sanitizer.flush();
+    if (tail) {
+      fullText += tail;
+      onEvent({ type: 'delta', delta: tail });
+    }
+    fullText = sanitizePlainText(fullText, keepBullets);
+    if (!fullText) throw makeApiError('文字模型返回内容为空，请重试。', 502);
+    return { content: fullText, model: respModel, usage, citations };
+  }
+
+  async function hydrateJobs(jobs) {
+    for (const job of jobs) {
+      for (const ast of job.assets || []) {
+        if (ast.stored_idb && ast.filename) {
+          const objUrl = await getBlobObjectUrl(ast.filename);
+          if (objUrl) ast.url = objUrl;
+        }
+      }
+    }
+    return jobs;
+  }
+
+  async function hydrateWritingSessions(sessions) {
+    for (const sess of sessions) {
+      for (const msg of sess.messages || []) {
+        for (const att of msg.attachments || []) {
+          if (att.filename) {
+            const objUrl = await getBlobObjectUrl(att.filename);
+            if (objUrl) att.url = objUrl;
+          }
+        }
+      }
+    }
+    return sessions;
+  }
+
+  async function syncTask(localId, forceRefresh = false) {
+    const jobs = readJsonStorage(STORAGE_JOBS_KEY, []);
+    const idx = jobs.findIndex((j) => j.id === localId);
+    if (idx === -1) throw makeApiError('任务记录不存在', 404);
+    const job = jobs[idx];
+    if (!forceRefresh && job.state !== 'queued' && job.state !== 'running') {
+      await hydrateJobs([job]);
+      return job;
+    }
+
+    const apiKey = loadConfig().api_key;
+    const remote = await spicyRequest('/jobs/recordInfo', { apiKey, params: { taskId: job.task_id } });
+    const state = String(remote.state || 'running');
+    job.state = state;
+    job.cost = remote.cost || remote.estimatedCost || job.cost;
+    job.settled = Boolean(remote.settled);
+    job.updated_at = new Date().toISOString();
+
+    if (state === 'succeeded') {
+      const remoteAssets = remote.output?.assets || [];
+      if (remoteAssets.some((a) => a.pending)) {
+        job.state = 'running';
+      } else {
+        const localAssets = [];
+        for (let i = 0; i < remoteAssets.length; i += 1) {
+          const ra = remoteAssets[i];
+          if (ra.unavailable || !ra.url) continue;
+          const mime = String(ra.mime || (job.media_type === 'video' ? 'video/mp4' : 'image/png')).toLowerCase();
+          const isVideo = mime.startsWith('video/') || /\.(mp4|mov|webm|m4v)(\?|$)/i.test(String(ra.url));
+          const ext = mime.includes('quicktime')
+            ? 'mov'
+            : mime.includes('webm')
+              ? 'webm'
+              : isVideo
+                ? 'mp4'
+                : mime.includes('jpeg') || mime.includes('jpg')
+                  ? 'jpg'
+                  : 'png';
+          const fname = `${localId}_${i}.${ext}`;
+          let storedIdb = false;
+          // Skip storing large video binaries inside mobile browser IndexedDB; stream directly via remote signed URL
+          if (!isVideo) {
+            try {
+              const rImg = await fetch(ra.url);
+              if (rImg.ok) {
+                const blob = await rImg.blob();
+                await idbPut(fname, blob);
+                storedIdb = true;
+              }
+            } catch {
+              // CDN lacked CORS; keep remote signed URL directly for <img>
+            }
+          }
+          localAssets.push({
+            kind: isVideo ? 'video' : 'image',
+            filename: fname,
+            url: storedIdb ? (await getBlobObjectUrl(fname)) || ra.url : ra.url,
+            remote_url: ra.url,
+            stored_idb: storedIdb,
+            mime,
+            width: ra.width,
+            height: ra.height,
+            layer: ra.layer || null,
+          });
+        }
+        job.assets = localAssets;
+        job.completed_at = remote.completedAt || new Date().toISOString();
+      }
+    } else if (state !== 'queued' && state !== 'running') {
+      job.error_code = remote.error?.code || remote.errorCode || null;
+      job.error_message = remote.error?.message || remote.errorMessage || `任务状态：${state}`;
+      job.completed_at = new Date().toISOString();
+    }
+
+    jobs[idx] = job;
+    writeJsonStorage(STORAGE_JOBS_KEY, jobs.map((j) => ({
+      ...j,
+      assets: (j.assets || []).map((a) => ({
+        ...a,
+        url: a.stored_idb ? a.remote_url || '' : a.url,
+      })),
+    })));
+    await hydrateJobs([job]);
+    return job;
+  }
+
+  async function request(path, options = {}) {
+    const method = (options.method || 'GET').toUpperCase();
+
+    if (path === '/api/config' && method === 'GET') {
+      return {
+        ok: true,
+        cloud_mode: true,
+        settings: getPublicSettings(),
+        network: {
+          local_url: CLOUD_URL,
+          primary_lan_url: window.location.origin + window.location.pathname,
+          lan_urls: [CLOUD_URL],
+        },
+        schema: {
+          models: SEEDREAM_MODELS,
+          video_models: VIDEO_MODEL_CATALOG,
+          prompt_templates: PROMPT_ENGINEERING_TEMPLATES,
+          aspect_ratios: ASPECT_RATIOS,
+          resolutions: IMAGE_RESOLUTIONS,
+          layer_resolutions: LAYER_RESOLUTIONS,
+          output_formats: OUTPUT_FORMATS,
+          backgrounds: BACKGROUNDS,
+          llm_presets: {
+            venice: VENICE_TEXT_PRESETS,
+            spicyapi: SPICY_TEXT_PRESETS,
+            custom: CUSTOM_LLM_PRESETS,
+          },
+          writing_personas: WRITING_PERSONA_META,
+        },
+      };
+    }
+
+    if (path === '/api/config' && method === 'POST') {
+      const body = JSON.parse(String(options.body || '{}'));
+      const cur = { ...loadConfig(), _explicit: true };
+      if (body.clear_key) cur.api_key = '';
+      else if (typeof body.api_key === 'string' && body.api_key.trim()) cur.api_key = body.api_key.trim();
+      if (typeof body.base_url === 'string' && body.base_url.trim()) cur.base_url = body.base_url.trim().replace(/\/+$/, '');
+      if (typeof body.llm_provider === 'string' && body.llm_provider.trim()) cur.llm_provider = body.llm_provider.trim();
+      if (typeof body.llm_model === 'string' && body.llm_model.trim()) cur.llm_model = body.llm_model.trim();
+      if (typeof body.llm_base_url === 'string' && body.llm_base_url.trim()) cur.llm_base_url = body.llm_base_url.trim().replace(/\/+$/, '');
+      if (body.clear_llm_key) cur.llm_api_key = '';
+      else if (typeof body.llm_api_key === 'string' && body.llm_api_key.trim()) cur.llm_api_key = body.llm_api_key.trim();
+      writeJsonStorage(STORAGE_CFG_KEY, cur);
+
+      let balance = null;
+      let connection_ok = false;
+      let connection_error = null;
+      if (cur.api_key) {
+        try {
+          balance = await spicyRequest('/chat/credit', { apiKey: cur.api_key });
+          connection_ok = true;
+        } catch (err) {
+          connection_error = err.message;
+        }
+      }
+
+      let llm_balance = null;
+      let llm_connection_ok = false;
+      let llm_connection_error = null;
+      const llm = resolveLlmCreds();
+      if (llm.provider === 'venice' && llm.apiKey) {
+        try {
+          llm_balance = await fetchVeniceBalance(llm.apiKey, llm.baseUrl);
+          llm_connection_ok = true;
+        } catch (err) {
+          llm_connection_error = err.message;
+        }
+      }
+
+      return {
+        ok: true,
+        settings: getPublicSettings(),
+        connection_ok,
+        connection_error,
+        balance,
+        llm_connection_ok,
+        llm_connection_error,
+        llm_balance,
+      };
+    }
+
+    if (path === '/api/balance') {
+      const balance = await spicyRequest('/chat/credit', { apiKey: loadConfig().api_key });
+      return { ok: true, balance };
+    }
+
+    if (path === '/api/llm-balance') {
+      const llm = resolveLlmCreds();
+      if (llm.provider !== 'venice') return { ok: true, provider: llm.provider, supported: false, balance: null };
+      const balance = await fetchVeniceBalance(llm.apiKey, llm.baseUrl);
+      return { ok: true, provider: 'venice', supported: true, balance };
+    }
+
+    if (path === '/api/console-overview' && method === 'GET') {
+      const cfg = loadConfig();
+      const spicyKey = cfg.api_key || '';
+      const llm = resolveLlmCreds();
+      const spicy = { configured: Boolean(spicyKey) };
+      if (spicyKey) {
+        const settle = await Promise.allSettled([
+          spicyRequest('/chat/credit', { apiKey: spicyKey }),
+          spicyRequest('/usage', { apiKey: spicyKey }),
+          spicyRequest('/jobs', { apiKey: spicyKey, params: { limit: 25 } }),
+          spicyRequest('/models', { apiKey: spicyKey, params: { limit: 100 } }),
+        ]);
+        const keys = ['balance', 'usage', 'jobs', 'models'];
+        const errs = [];
+        settle.forEach((res, idx) => {
+          const name = keys[idx];
+          if (res.status === 'fulfilled') {
+            if (name === 'models') {
+              const items = res.value?.items || [];
+              const categories = {};
+              items.forEach((it) => {
+                const c = String(it.modality || it.category || 'other');
+                categories[c] = (categories[c] || 0) + 1;
+              });
+              spicy.models = {
+                total: Number(res.value?.total || items.length),
+                categories,
+                items_sample_count: items.length,
+              };
+            } else {
+              spicy[name] = res.value;
+            }
+          } else {
+            spicy[name] = null;
+            errs.push(`${name}: ${res.reason?.message || res.reason}`);
+          }
+        });
+        if (errs.length) spicy.error = errs.join(' | ');
+      }
+      const venice = { provider: llm.provider, model: llm.model, configured: Boolean(llm.apiKey) };
+      if (llm.provider === 'venice' && llm.apiKey) {
+        try {
+          venice.balance = await fetchVeniceBalance(llm.apiKey, llm.baseUrl);
+        } catch (err) {
+          venice.error = err.message;
+        }
+      }
+      return { ok: true, spicy, venice };
+    }
+
+    if (path === '/api/quote' && method === 'POST') {
+      const body = JSON.parse(String(options.body || '{}'));
+      const mediaType = body.media_type || 'image';
+      const apiKey = loadConfig().api_key;
+      if (mediaType === 'video') {
+        const videoFamily = body.video_family || 'seedance-2.5';
+        const mode = body.mode || 'text-to-video';
+        const spec = VIDEO_MODEL_MAP[videoFamily];
+        if (!spec) throw makeApiError(`不支持的视频模型：${videoFamily}`, 400);
+        const dummyUris = mode !== 'text-to-video' ? ['https://example.com/ref.png'] : [];
+        const { modelId, taskInput } = buildVideoPayload({
+          video_family: videoFamily,
+          mode,
+          prompt: String(body.prompt || '').trim() || 'smooth camera push in, natural motion',
+          duration_seconds: body.duration_seconds !== undefined ? Number(body.duration_seconds) : spec.default_duration,
+          resolution: body.resolution || spec.default_resolution,
+          aspect_ratio: body.aspect_ratio || spec.default_aspect_ratio,
+          image_uris: dummyUris,
+          generate_audio: body.generate_audio !== undefined ? Boolean(body.generate_audio) : true,
+          negative_prompt: body.negative_prompt || '',
+          watermark: Boolean(body.watermark),
+          shot_type: body.shot_type || 'single',
+          enable_thinking: Boolean(body.enable_thinking),
+          enable_prompt_expansion: Boolean(body.enable_prompt_expansion),
+          output_format: body.output_format || 'mp4',
+        });
+        if (mode === 'text-to-video' && apiKey) {
+          const quote = await spicyRequest('/jobs/quote', {
+            method: 'POST',
+            apiKey,
+            body: { model: modelId, input: taskInput },
+          });
+          return { ok: true, source: 'live', quote };
+        }
+        const durLabel = taskInput.duration_seconds === -1 ? '自动匹配' : `${taskInput.duration_seconds}秒`;
+        return {
+          ok: true,
+          source: 'catalog',
+          quote: {
+            estimatedCost: spec.price_hint || '实时锁价',
+            currency: 'USD',
+            note: `${spec.label} · ${taskInput.resolution} · ${durLabel}${spec.price_hint ? `（参考：${spec.price_hint}）` : ''}`,
+          },
+        };
+      }
+
+      const mode = body.mode || 'text-to-image';
+      const resolution = body.resolution || '2k';
+      if (mode === 'text-to-image' && apiKey) {
+        const { modelId, taskInput } = buildSeedreamPayload({
+          mode,
+          prompt: body.prompt || 'a studio photo',
+          aspect_ratio: body.aspect_ratio || '1:1',
+          resolution,
+          output_format: body.output_format || 'png',
+          background: body.background || 'auto',
+        });
+        const quote = await spicyRequest('/jobs/quote', {
+          method: 'POST',
+          apiKey,
+          body: { model: modelId, input: taskInput },
+        });
+        return { ok: true, source: 'live', quote };
+      }
+      const unitPrice = resolution === '2k' || resolution === 'auto' ? '0.035' : '0.02';
+      return {
+        ok: true,
+        source: 'catalog',
+        quote: { estimatedCost: unitPrice, currency: 'USD', note: '官方目录参考价' },
+      };
+    }
+
+    if (path === '/api/tasks' && method === 'GET') {
+      const jobs = await hydrateJobs(readJsonStorage(STORAGE_JOBS_KEY, []));
+      return { ok: true, items: jobs };
+    }
+
+    if (path.startsWith('/api/tasks/') && method === 'GET') {
+      const id = decodeURIComponent(path.slice('/api/tasks/'.length));
+      const job = await syncTask(id, false);
+      return { ok: true, job };
+    }
+
+    if (path.endsWith('/refresh') && method === 'POST') {
+      const id = decodeURIComponent(path.slice('/api/tasks/'.length, -'/refresh'.length));
+      const job = await syncTask(id, true);
+      return { ok: true, job };
+    }
+
+    if (path.startsWith('/api/tasks/') && method === 'DELETE') {
+      const id = decodeURIComponent(path.slice('/api/tasks/'.length));
+      const jobs = readJsonStorage(STORAGE_JOBS_KEY, []);
+      const target = jobs.find((j) => j.id === id);
+      const remaining = jobs.filter((j) => j.id !== id);
+      writeJsonStorage(STORAGE_JOBS_KEY, remaining);
+      for (const ast of target?.assets || []) {
+        if (ast.filename) await idbDelete(ast.filename);
+      }
+      return { ok: true };
+    }
+
+    if (path === '/api/generate' && method === 'POST') {
+      const apiKey = loadConfig().api_key;
+      if (!apiKey) throw makeApiError('尚未配置 SpicyAPI Key，请先点击右上角「⚙️ 设置」填入。', 401);
+      const fd = options.body;
+      const parseBool = (val, def = false) => {
+        if (val === null || val === undefined || val === '') return def;
+        return ['1', 'true', 'yes', 'on'].includes(String(val).trim().toLowerCase());
+      };
+      const mediaType = String(fd.get('media_type') || 'image');
+      const mode = String(fd.get('mode') || (mediaType === 'video' ? 'text-to-video' : 'text-to-image'));
+      const prompt = String(fd.get('prompt') || '');
+
+      const collected = await collectFormBlobs(fd, 10);
+      if (mediaType !== 'video' && (mode === 'edit' || mode === 'layer-decomposition') && !collected.length) {
+        throw makeApiError('请至少上传或选择 1 张参考图片。', 400);
+      }
+      const image_uris = [];
+      for (const c of collected) {
+        image_uris.push(await uploadBlobToSpicy(apiKey, c.blob, c.mime));
+      }
+
+      let modelId;
+      let taskInput;
+      let localId;
+      let recordParams;
+
+      if (mediaType === 'video') {
+        const videoFamily = String(fd.get('video_family') || 'seedance-2.5');
+        const spec = VIDEO_MODEL_MAP[videoFamily];
+        if (!spec) throw makeApiError(`不支持的视频模型：${videoFamily}`, 400);
+        const rawDur = fd.get('duration_seconds');
+        const durationSeconds = rawDur !== null && rawDur !== '' ? Number(rawDur) : spec.default_duration;
+        const resolution = String(fd.get('resolution') || spec.default_resolution);
+        const aspectRatio = String(fd.get('aspect_ratio') || spec.default_aspect_ratio);
+        const outputFormat = String(fd.get('output_format') || 'mp4');
+        const built = buildVideoPayload({
+          video_family: videoFamily,
+          mode,
+          prompt,
+          duration_seconds: durationSeconds,
+          resolution,
+          aspect_ratio: aspectRatio,
+          image_uris,
+          generate_audio: parseBool(fd.get('generate_audio'), true),
+          negative_prompt: String(fd.get('negative_prompt') || ''),
+          watermark: parseBool(fd.get('watermark'), false),
+          shot_type: String(fd.get('shot_type') || 'single'),
+          enable_thinking: parseBool(fd.get('enable_thinking'), false),
+          enable_prompt_expansion: parseBool(fd.get('enable_prompt_expansion'), false),
+          output_format: outputFormat,
+        });
+        modelId = built.modelId;
+        taskInput = built.taskInput;
+        localId = `vd_${randHex(12)}`;
+        recordParams = {
+          video_family: videoFamily,
+          aspect_ratio: taskInput.aspect_ratio || aspectRatio,
+          resolution: taskInput.resolution || resolution,
+          duration_seconds: taskInput.duration_seconds,
+          generate_audio: taskInput.generate_audio,
+          output_format: taskInput.output_format || outputFormat,
+          shot_type: taskInput.shot_type || null,
+          ref_count: image_uris.length,
+        };
+      } else {
+        const aspect_ratio = String(fd.get('aspect_ratio') || '1:1');
+        const resolution = String(fd.get('resolution') || (mode === 'layer-decomposition' ? 'auto' : '2k'));
+        const output_format = String(fd.get('output_format') || 'png');
+        const background = String(fd.get('background') || 'auto');
+        const num_outputs = Number(fd.get('num_outputs') || 10);
+        const built = buildSeedreamPayload({
+          mode,
+          prompt,
+          aspect_ratio,
+          resolution,
+          output_format,
+          background,
+          image_uris,
+          num_outputs,
+        });
+        modelId = built.modelId;
+        taskInput = built.taskInput;
+        localId = `sd_${randHex(12)}`;
+        recordParams = {
+          aspect_ratio,
+          resolution,
+          output_format: taskInput.output_format || output_format,
+          background: taskInput.background || background,
+          ref_count: image_uris.length,
+          num_outputs: taskInput.num_outputs || null,
+        };
+      }
+
+      const remote = await spicyRequest('/jobs/createTask', {
+        method: 'POST',
+        apiKey,
+        body: { model: modelId, input: taskInput },
+        extraHeaders: { 'Idempotency-Key': localId },
+        retries: 2,
+      });
+      const taskId = String(remote.taskId || '');
+      if (!taskId) throw makeApiError('SpicyAPI 未返回有效的 taskId。', 500);
+
+      const now = new Date().toISOString();
+      const record = {
+        id: localId,
+        task_id: taskId,
+        media_type: mediaType,
+        mode,
+        model: modelId,
+        prompt: prompt.trim(),
+        params: recordParams,
+        state: String(remote.state || 'queued'),
+        estimated_cost: remote.estimatedCost || remote.cost || null,
+        cost: remote.cost || null,
+        settled: Boolean(remote.settled),
+        deadline_at: remote.deadlineAt || null,
+        assets: [],
+        created_at: now,
+        updated_at: now,
+        completed_at: null,
+      };
+      const jobs = readJsonStorage(STORAGE_JOBS_KEY, []);
+      jobs.unshift(record);
+      writeJsonStorage(STORAGE_JOBS_KEY, jobs.slice(0, 100));
+      return { ok: true, job: record };
+    }
+
+    if (path === '/api/writing/sessions' && method === 'GET') {
+      const items = await hydrateWritingSessions(readJsonStorage(STORAGE_WRITING_KEY, []));
+      return { ok: true, items };
+    }
+
+    if (path.startsWith('/api/writing/sessions/') && method === 'DELETE') {
+      const sid = decodeURIComponent(path.slice('/api/writing/sessions/'.length));
+      const sessions = readJsonStorage(STORAGE_WRITING_KEY, []);
+      const target = sessions.find((s) => s.id === sid);
+      const remaining = sessions.filter((s) => s.id !== sid);
+      writeJsonStorage(STORAGE_WRITING_KEY, remaining);
+
+      const stillUsed = new Set(
+        remaining.flatMap((s) => (s.messages || []).flatMap((m) => (m.attachments || []).map((a) => a.filename).filter(Boolean)))
+      );
+      for (const m of target?.messages || []) {
+        for (const att of m.attachments || []) {
+          if (att.source === 'upload' && att.filename && !stillUsed.has(att.filename)) {
+            await idbDelete(att.filename);
+          }
+        }
+      }
+      return { ok: true };
+    }
+
+    throw makeApiError(`不支持的本地云端接口: ${method} ${path}`, 404);
+  }
+
+  async function stream(path, options, onEvent) {
+    const llm = resolveLlmCreds();
+
+    if (path === '/api/enhance-prompt/stream') {
+      let prompt = '';
+      let mode = 'text-to-image';
+      let style = 'none';
+      let lang = 'en';
+      let templateId = '';
+      let customTemplate = '';
+      let targetModel = '';
+      let mediaType = 'image';
+      let durationSeconds = null;
+      let refCount = 0;
+      let blobs = [];
+      if (options.body instanceof FormData) {
+        const fd = options.body;
+        prompt = String(fd.get('prompt') || '');
+        mode = String(fd.get('mode') || 'text-to-image');
+        style = String(fd.get('style') || 'none');
+        lang = String(fd.get('lang') || 'en');
+        templateId = String(fd.get('template_id') || '');
+        customTemplate = String(fd.get('custom_template') || '');
+        targetModel = String(fd.get('target_model') || '');
+        mediaType = String(fd.get('media_type') || 'image');
+        const rawDur = fd.get('duration_seconds');
+        durationSeconds = rawDur !== null && rawDur !== '' ? Number(rawDur) : null;
+        refCount = Number(fd.get('ref_count') || 0);
+        blobs = await collectFormBlobs(fd, 6);
+        refCount = Math.max(refCount, blobs.length);
+      } else {
+        const b = JSON.parse(String(options.body || '{}'));
+        prompt = String(b.prompt || '');
+        mode = String(b.mode || 'text-to-image');
+        style = String(b.style || 'none');
+        lang = String(b.lang || 'en');
+        templateId = String(b.template_id || '');
+        customTemplate = String(b.custom_template || '');
+        targetModel = String(b.target_model || '');
+        mediaType = String(b.media_type || 'image');
+        durationSeconds = b.duration_seconds !== undefined && b.duration_seconds !== null ? Number(b.duration_seconds) : null;
+        refCount = Number(b.ref_count || 0);
+      }
+      const cleaned = prompt.trim();
+      if (!cleaned) throw makeApiError('请先在输入框写几句简单描述，再点击 AI 扩写。', 400);
+
+      const imageUrls = await Promise.all(
+        blobs.map(async (b) => (await processImageBlob(b.blob, b.mime, { maxDim: 1280, forceJpeg: true })).dataUrl)
+      );
+      const messages = buildEnhancerMessages({
+        userPrompt: cleaned,
+        mode,
+        style,
+        lang,
+        refCount,
+        imageUrls,
+        templateId,
+        customTemplate,
+        targetModel,
+        durationSeconds,
+        mediaType,
+      });
+
+      const res = await streamOpenAIChat(
+        {
+          provider: llm.provider,
+          baseUrl: llm.baseUrl,
+          apiKey: llm.apiKey,
+          model: llm.model,
+          messages,
+          temperature: 0.7,
+          maxTokens: 1800,
+          keepBullets: false,
+        },
+        onEvent
+      );
+      onEvent({
+        type: 'done',
+        prompt: sanitizePlainText(res.content, false),
+        model: res.model,
+        used_vision: imageUrls.length > 0,
+      });
+      return;
+    }
+
+    if (path === '/api/writing/chat/stream') {
+      const fd = options.body;
+      const sessionId = String(fd.get('session_id') || '').trim();
+      let userMessage = String(fd.get('message') || '').trim();
+      const persona = String(fd.get('persona') || '').trim();
+      const customSystem = fd.has('custom_system') ? String(fd.get('custom_system') || '') : null;
+      const reqModel = String(fd.get('model') || '').trim();
+      const rawWs = String(fd.get('web_search') || 'off').trim().toLowerCase();
+      const webSearch = ['off', 'auto', 'on'].includes(rawWs) ? rawWs : 'off';
+
+      const collected = await collectFormBlobs(fd, 4);
+      if (!userMessage && !collected.length) {
+        throw makeApiError('请输入写作要求，或至少上传 1 张参考图。', 400);
+      }
+      if (!userMessage && collected.length) {
+        userMessage = '请仔细观察我发送的参考图，结合画面细节进行生动创作或按场景续写。';
+      }
+
+      const sessions = readJsonStorage(STORAGE_WRITING_KEY, []);
+      const now = new Date().toISOString();
+      const existing = sessionId ? sessions.find((s) => s.id === sessionId) : null;
+      const effPersona = persona || existing?.persona || 'historical_war';
+      const effCustomSystem = customSystem !== null ? customSystem : existing?.custom_system || '';
+      const effModel = reqModel || existing?.model || llm.model;
+
+      const session = existing
+        ? { ...existing, persona: effPersona, custom_system: effCustomSystem, model: effModel, messages: [...(existing.messages || [])] }
+        : {
+            id: sessionId || `wr_${randHex(12)}`,
+            title: userMessage.slice(0, 28).replace(/\n/g, ' '),
+            persona: effPersona,
+            custom_system: effCustomSystem,
+            model: effModel,
+            messages: [],
+            created_at: now,
+            updated_at: now,
+          };
+
+      const batch = `wr_${randHex(12)}`;
+      const savedBlobKeys = [];
+      const attachments = [];
+      for (let i = 0; i < collected.length; i += 1) {
+        const item = collected[i];
+        if (item.kind === 'local' && item.localFilename) {
+          attachments.push({
+            filename: item.localFilename,
+            url: (await getBlobObjectUrl(item.localFilename)) || '',
+            mime: item.mime,
+            source: 'output',
+          });
+        } else {
+          const fname = `${batch}_${i}.jpg`;
+          const processed = await processImageBlob(item.blob, item.mime, { maxDim: 1280, forceJpeg: true });
+          await idbPut(fname, processed.blob);
+          savedBlobKeys.push(fname);
+          attachments.push({
+            filename: fname,
+            url: (await getBlobObjectUrl(fname)) || '',
+            mime: processed.mime,
+            source: 'upload',
+          });
+        }
+      }
+
+      const userTurn = {
+        id: `m_${randHex(10)}`,
+        role: 'user',
+        content: userMessage,
+        attachments,
+        created_at: now,
+      };
+      const turnsForApi = [...session.messages, userTurn];
+
+      // Include up to 24 recent turns and up to 6 recent images
+      const recent = turnsForApi.slice(-24);
+      const includeTurnImgs = new Array(recent.length).fill(false);
+      let remImgs = 6;
+      for (let i = recent.length - 1; i >= 0; i -= 1) {
+        const atts = recent[i].attachments || [];
+        if (atts.length && remImgs > 0) {
+          includeTurnImgs[i] = true;
+          remImgs -= atts.length;
+        }
+      }
+
+      const apiMessages = [];
+      const baseSys = (effCustomSystem || '').trim() || WRITING_PERSONAS[effPersona] || WRITING_PERSONAS.historical_war;
+      apiMessages.push({ role: 'system', content: `${baseSys}\n${PLAIN_TEXT_OUTPUT_RULE}` });
+
+      for (let i = 0; i < recent.length; i += 1) {
+        const turn = recent[i];
+        const role = turn.role === 'assistant' ? 'assistant' : 'user';
+        const atts = turn.attachments || [];
+        if (role === 'user' && atts.length && includeTurnImgs[i]) {
+          const parts = [{ type: 'text', text: turn.content || '' }];
+          for (let aIdx = 0; aIdx < atts.length; aIdx += 1) {
+            const got = await resolveLocalBlobOrUrl(atts[aIdx].filename).catch(() => null);
+            const blobObj = got?.blob;
+            if (!blobObj) continue;
+            const processed = await processImageBlob(blobObj, atts[aIdx].mime, { maxDim: 1280, forceJpeg: true });
+            parts.push({ type: 'text', text: `[参考图 ${aIdx + 1}]` });
+            parts.push({ type: 'image_url', image_url: { url: processed.dataUrl } });
+          }
+          apiMessages.push({ role, content: parts });
+        } else {
+          apiMessages.push({ role, content: turn.content || '' });
+        }
+      }
+
+      let res;
+      try {
+        res = await streamOpenAIChat(
+          {
+            provider: llm.provider,
+            baseUrl: llm.baseUrl,
+            apiKey: llm.apiKey,
+            model: effModel,
+            messages: apiMessages,
+            temperature: 0.8,
+            maxTokens: 2600,
+            keepBullets: true,
+            webSearch,
+          },
+          onEvent
+        );
+      } catch (err) {
+        for (const k of savedBlobKeys) await idbDelete(k);
+        throw err;
+      }
+
+      const citations = res.citations || [];
+      const replyTurn = {
+        id: `m_${randHex(10)}`,
+        role: 'assistant',
+        content: res.content,
+        model: res.model,
+        usage: res.usage,
+        citations,
+        created_at: new Date().toISOString(),
+      };
+      session.messages = [...turnsForApi, replyTurn];
+      session.updated_at = new Date().toISOString();
+
+      // Persist clean serializable metadata (object URLs rehydrate cleanly from IndexedDB)
+      const persistedSession = {
+        ...session,
+        messages: session.messages.map((m) => ({
+          ...m,
+          attachments: (m.attachments || []).map((a) => ({
+            filename: a.filename,
+            url: '',
+            mime: a.mime,
+            source: a.source,
+          })),
+        })),
+      };
+      const updatedList = [persistedSession, ...sessions.filter((s) => s.id !== session.id)].slice(0, 60);
+      writeJsonStorage(STORAGE_WRITING_KEY, updatedList);
+      await hydrateWritingSessions([session]);
+      onEvent({ type: 'done', session, reply: res.content, model: res.model, usage: res.usage, citations });
+      return;
+    }
+
+    throw makeApiError(`不支持的流式接口: ${path}`, 404);
+  }
+
+  window.DirectApi = {
+    CLOUD_URL,
+    request,
+    stream,
+    isKnownStaticHost: () =>
+      window.location.hostname.endsWith('.github.io') ||
+      window.location.hostname.endsWith('.pages.dev') ||
+      window.location.hostname.endsWith('.netlify.app') ||
+      window.location.hostname.endsWith('.vercel.app') ||
+      window.location.protocol === 'file:',
+  };
+})();
