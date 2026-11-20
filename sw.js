@@ -1,4 +1,4 @@
-const CACHE_NAME = 'alt_history_studio_v1';
+const CACHE_NAME = 'alt_history_studio_v2';
 
 self.addEventListener('install', (event) => {
   self.skipWaiting();
